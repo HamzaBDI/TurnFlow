@@ -2119,16 +2119,33 @@ window.reloadUserDataForActiveUser = async function reloadUserDataForActiveUser(
     return node.stats; 
   }
   
-  function processSRS(node, isCorrect){
+  function processSRS(node, result = 'correct'){
     const stats = ensureStats(node);
-    if(isCorrect){
-      if(stats.interval === 0) stats.interval = 1;
-      else if(stats.interval === 1) stats.interval = 3;
+    const now = Date.now();
+    const MIN = 60000;
+    const MINUTES = m => m * MIN;
+
+    // A review is not considered a clean success if the player needed
+    // a retry, a hint, or the answer was revealed. Struggled moves enter
+    // a short relearning phase before returning to normal SRS.
+    if (result === 'correct') {
+      if (stats.interval === 0) stats.interval = 1;
+      else if (stats.interval === 1) stats.interval = 3;
       else stats.interval = Math.round(stats.interval * 1.5);
-    } else {
+      stats.dueDate = now + stats.interval * 86400000;
+    } else if (result === 'hint') {
       stats.interval = 0;
+      stats.dueDate = now + MINUTES(10);
+    } else if (result === 'struggle') {
+      stats.interval = 0;
+      stats.dueDate = now + MINUTES(10);
+    } else if (result === 'revealed') {
+      stats.interval = 0;
+      stats.dueDate = now + MINUTES(5);
+    } else if (result === 'wrong') {
+      stats.interval = 0;
+      stats.dueDate = now + MINUTES(5);
     }
-    stats.dueDate = Date.now() + stats.interval * 86400000;
   }
 
   function traineeColor(){ return activeOpeningMeta && activeOpeningMeta.color === 'black' ? 'b' : 'w'; }
@@ -4329,29 +4346,97 @@ function nodeHasVisibleDot(node){
     return leaves;
   }
 
-  function getDueCount() {
-    if (!root) return 0;
-    const leaves = getAllLeaves();
+  // Returns each *node* (move) that is due right now, visiting every node in
+  // the tree exactly once. This is the source of truth for "how many due
+  // things are there" — a shared move like 1.d4 that sits under many
+  // variations is one due node, not one due node per variation below it.
+  function getDueMoveNodes() {
+    if (!root) return [];
     const color = traineeColor();
     const now = Date.now();
-    let dueLinesCount = 0;
-    leaves.forEach(leaf => {
-      let pathNode = leaf;
-      let isLineDue = false;
-      while (pathNode && pathNode.parent) {
-        if (fenFields(pathNode.parent.fen).turn === color && ensureStats(pathNode).dueDate <= now) {
-          isLineDue = true; break;
-        }
-        pathNode = pathNode.parent;
-      }
-      if (isLineDue) dueLinesCount++;
-    });
-    return dueLinesCount;
+    const dueNodes = [];
+    (function walk(n){
+      const isTraineeTurn = fenFields(n.fen).turn === color;
+      n.children.forEach(child => {
+        if (isTraineeTurn && ensureStats(child).dueDate <= now) dueNodes.push(child);
+        walk(child);
+      });
+    })(root);
+    return dueNodes;
+  }
+
+  // Follows the top (first-listed) child at every branch point until a
+  // leaf is reached. Used so a due move is reviewed via the main line
+  // rather than by replaying every sibling variation underneath it.
+  function topLineLeafFrom(node){
+    let curr = node;
+    while (curr.children.length) curr = curr.children[0];
+    return curr;
+  }
+
+  function getDueCount() {
+    return getDueMoveNodes().length;
   }
 
   function updateDueBadge() {
     const btn = document.querySelector('.seg-btn[data-val="due"]');
     if (btn) btn.textContent = 'Due (' + getDueCount() + ')';
+  }
+
+  // A line can be scheduled for later today (e.g. a 5-10 min relearning
+  // step after a wrong answer) without being immediately trainable yet
+  // (dueDate > now). getDueCount() only counts lines that are trainable
+  // right now, so this looks specifically for the "due later today, just
+  // not this second" case and reports how many lines qualify plus when
+  // the soonest one becomes due.
+  function endOfToday(now) {
+    const d = new Date(now);
+    d.setHours(23, 59, 59, 999);
+    return d.getTime();
+  }
+
+  function calendarDayDiff(due, now) {
+    const startOfToday = new Date(now); startOfToday.setHours(0, 0, 0, 0);
+    const startOfDueDay = new Date(due); startOfDueDay.setHours(0, 0, 0, 0);
+    return Math.round((startOfDueDay - startOfToday) / 86400000);
+  }
+
+  function getDueLaterTodayInfo() {
+    if (!root) return { count: 0, nextDueDate: null };
+    const color = traineeColor();
+    const now = Date.now();
+    const eod = endOfToday(now);
+    let count = 0;
+    let nextDueDate = null;
+
+    // Walk every node once (same traversal as getDueMoveNodes) so a move
+    // shared by several variations is only counted once here too.
+    (function walk(n){
+      const isTraineeTurn = fenFields(n.fen).turn === color;
+      n.children.forEach(child => {
+        if (isTraineeTurn) {
+          const dd = ensureStats(child).dueDate;
+          // Only count moves that aren't already trainable right now (those
+          // are covered by getDueCount / the "Due (SRS)" badge), but that
+          // will become due before midnight.
+          if (dd > now && dd <= eod) {
+            count++;
+            if (nextDueDate === null || dd < nextDueDate) nextDueDate = dd;
+          }
+        }
+        walk(child);
+      });
+    })(root);
+
+    return { count, nextDueDate };
+  }
+
+  function fmtCountdown(ms) {
+    if (ms <= 0) return 'now';
+    const totalMin = Math.ceil(ms / 60000);
+    if (totalMin < 60) return totalMin + 'm';
+    const h = Math.floor(totalMin / 60), m = totalMin % 60;
+    return h + 'h' + (m > 0 ? ' ' + m + 'm' : '');
   }
 
   function renderModeUI(){
@@ -4381,6 +4466,16 @@ function nodeHasVisibleDot(node){
 
     if (showSetup) renderTrainViewIdle();
     if (isTrain || isStudy) renderBoard();
+
+    // Keep the "due later today" countdown fresh while the idle Training
+    // screen is showing, without polling in the background elsewhere.
+    clearInterval(window._trainIdleRefreshTimer);
+    if (showSetup) {
+      window._trainIdleRefreshTimer = setInterval(() => {
+        if (mode === 'train' && !trainSession) { renderTrainViewIdle(); updateDueBadge(); }
+        else clearInterval(window._trainIdleRefreshTimer);
+      }, 30000);
+    }
   }
 
   let badgesExpanded = false;
@@ -4426,7 +4521,10 @@ function nodeHasVisibleDot(node){
 
           const s = n.stats;
           if (s) {
-            let diffDays = Math.ceil((s.dueDate - now) / dayMs);
+            // Bucket by calendar day (midnight-to-midnight), not by raw
+            // 24h chunks from "now" — otherwise something due in 5 minutes
+            // (still today) gets pushed into the "Tmr" bucket.
+            let diffDays = calendarDayDiff(s.dueDate, now);
             if (diffDays < 0) diffDays = 0;
             if (diffDays <= 6) forecast[diffDays]++;
 
@@ -4861,13 +4959,18 @@ function nodeHasVisibleDot(node){
     const now = Date.now();
 
     if (kind === 'due') {
-      activeLines = leaves.filter(leaf => {
-        let temp = leaf;
-        while(temp && temp.parent) {
-          if (fenFields(temp.parent.fen).turn === color && ensureStats(temp).dueDate <= now) return true;
-          temp = temp.parent;
+      // One queue entry per due MOVE, not per variation underneath it —
+      // a shared move like 1.d4 should only be trained once. Each due
+      // move is reviewed by following the top line down to a leaf, so
+      // wrong answers don't cascade into replaying every sibling line.
+      const dueNodes = getDueMoveNodes();
+      const seenLeafIds = new Set();
+      dueNodes.forEach(node => {
+        const leaf = topLineLeafFrom(node);
+        if (!seenLeafIds.has(leaf.id)) {
+          seenLeafIds.add(leaf.id);
+          activeLines.push(leaf);
         }
-        return false;
       });
     } else {
       activeLines = leaves;
@@ -4879,7 +4982,10 @@ function nodeHasVisibleDot(node){
     if (count !== 'all') activeLines = activeLines.slice(0, Math.min(parseInt(count, 10), activeLines.length));
 
     trainSession = {
-      hintUsed: false, 
+      hintUsed: false,
+      hadMistake: false,
+      hadHint: false,
+      answerRevealed: false,
       kind, stats: { total: 0, correct: 0, incorrect: 0 }, 
       startTime: Date.now(), awaiting: false, queue: activeLines, qIndex: -1,
       testedIds: new Set(), currentPath: null, pathIndex: 0,
@@ -4971,10 +5077,20 @@ function nodeHasVisibleDot(node){
       ensureStats(expectedNextNode).attempts++;
       trainSession.stats.correct++;
       expectedNextNode.stats.correct++;
-      processSRS(expectedNextNode, true);
+      const reviewResult = trainSession.answerRevealed ? 'revealed'
+        : trainSession.hadMistake && trainSession.hadHint ? 'struggle'
+        : trainSession.hadMistake ? 'struggle'
+        : trainSession.hadHint ? 'hint'
+        : 'correct';
+      processSRS(expectedNextNode, reviewResult);
       trainSession.testedIds.add(expectedNextNode.id);
       trainSession.awaiting = false;
       trainSession.hintUsed = false;
+      trainSession.hadMistake = false;
+      trainSession.hadHint = false;
+      trainSession.answerRevealed = false;
+      const activeHintBtn = document.getElementById('btnActiveTrainingHint');
+      if (activeHintBtn) activeHintBtn.style.display = 'none';
       clearTrainingHint();
       showFeedback(true, expectedNextNode, matchedChild, playedSan);
       persistActiveTree();
@@ -5008,6 +5124,9 @@ function nodeHasVisibleDot(node){
 
   function handleIncorrectMove(expectedNextNode, playedSan, from, to, piece) {
     trainSession.stats.incorrect++;
+    trainSession.hadMistake = true;
+    const activeHintBtn = document.getElementById('btnActiveTrainingHint');
+    if (activeHintBtn) activeHintBtn.style.display = 'none';
     expectedNextNode.stats.incorrect++;
     processSRS(expectedNextNode, false);
     trainSession.testedIds.add(expectedNextNode.id);
@@ -5024,6 +5143,28 @@ function nodeHasVisibleDot(node){
     document.getElementById('trainPrompt').textContent = 'Your move (' + (traineeColor() === 'w' ? 'White' : 'Black') + ').';
     trainSession.moveStartTime = Date.now();
     updateStatChips();
+    const currentNode = trainSession.currentPath && trainSession.currentPath[trainSession.pathIndex];
+    const expectedNextNode = trainSession.currentPath && trainSession.currentPath[trainSession.pathIndex + 1];
+    if (trainSession.awaiting && expectedNextNode) ensureActiveTrainingHintButton(expectedNextNode);
+  }
+
+
+  function ensureActiveTrainingHintButton(expectedNextNode){
+    const controls = document.querySelector('#trainActive .controls');
+    if (!controls || !expectedNextNode || !trainSession || !trainSession.awaiting) return;
+    let btn = document.getElementById('btnActiveTrainingHint');
+    if (!btn){
+      btn = document.createElement('button');
+      btn.id = 'btnActiveTrainingHint';
+      btn.textContent = 'Hint';
+      controls.insertBefore(btn, controls.firstChild);
+    }
+    btn.onclick = () => {
+      trainSession.hintUsed = true;
+      trainSession.hadHint = true;
+      showTrainingHint(expectedNextNode);
+    };
+    btn.style.display = 'inline-block';
   }
 
   function updateStatChips(){
@@ -5075,6 +5216,7 @@ function nodeHasVisibleDot(node){
     hintBtn.textContent = 'Hint';
     hintBtn.addEventListener('click', ()=>{
       trainSession.hintUsed = true;
+      trainSession.hadHint = true;
       trainSession.awaiting = true;
       hideFeedback();
       clearTrainingHint();
@@ -5087,6 +5229,10 @@ function nodeHasVisibleDot(node){
     showBtn.className = 'primary';
     showBtn.textContent = 'Show move & continue';
     showBtn.addEventListener('click', () => {
+      trainSession.answerRevealed = true;
+      processSRS(expectedNextNode, 'revealed');
+      const activeHintBtn = document.getElementById('btnActiveTrainingHint');
+      if (activeHintBtn) activeHintBtn.style.display = 'none';
       clearTrainingHint();
       hideFeedback();
       const currentNode = trainSession.currentPath[trainSession.pathIndex];
@@ -5098,12 +5244,15 @@ function nodeHasVisibleDot(node){
         renderBoard();
         trainSession.pathIndex++;
         trainSession.hintUsed = false;
+        trainSession.hadMistake = false;
+        trainSession.hadHint = false;
+        trainSession.answerRevealed = false;
         setTimeout(advanceLine, 200);
       }, true, 220);
     });
 
     actionsEl.appendChild(retryBtn);
-    if (!trainSession.hintUsed) actionsEl.appendChild(hintBtn);
+    actionsEl.appendChild(hintBtn);
     actionsEl.appendChild(showBtn);
   }
 
@@ -5168,8 +5317,14 @@ function nodeHasVisibleDot(node){
     const sessions = (activeOpeningMeta && activeOpeningMeta.sessions) || [];
     let dueCount = getDueCount();
     let html = '<div class="train-view-empty">Configure session settings, then hit Start Training.</div>';
-    if (dueCount > 0) html += `<div class="hint" style="color: var(--accent); font-weight: 500;">You have ${dueCount} line(s) due for review.</div>`;
-    else html += `<div class="hint" style="color: var(--teal);">All caught up! No lines due right now.</div>`;
+    if (dueCount > 0) html += `<div class="hint" style="color: var(--accent); font-weight: 500;">You have ${dueCount} move(s) due for review.</div>`;
+    else html += `<div class="hint" style="color: var(--teal);">All caught up! No moves due right now.</div>`;
+
+    const laterToday = getDueLaterTodayInfo();
+    if (laterToday.count > 0) {
+      const countdown = fmtCountdown(laterToday.nextDueDate - Date.now());
+      html += `<div class="hint" style="color: var(--ink); font-size: 13.5px; font-weight: 500; margin-top: 6px;">+ ${laterToday.count} more move(s) due later today &mdash; next one in ${countdown}.</div>`;
+    }
 
     if (sessions.length){
       html += '<div class="recent-sessions"><h3>Recent sessions (This Opening)</h3><table><tr><th>When</th><th>Tested</th><th>Accuracy</th><th>Avg Speed</th></tr>' +
