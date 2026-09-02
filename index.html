@@ -286,6 +286,14 @@
   .modal-overlay{position:fixed;inset:0;background:rgba(10,9,7,0.75);display:none;align-items:center;justify-content:center;z-index:1000;}
   .modal-overlay.show{display:flex;}
   .modal-box{background:var(--panel);border:1px solid var(--rule);border-radius:8px;padding:24px;width:min(90vw,450px); max-height: 85vh; display: flex; flex-direction: column; position: relative; z-index: 1001;}
+  .srs-info-link{background:none;border:none;color:var(--ink-muted);font-family:'JetBrains Mono',monospace;font-size:11px;text-decoration:underline;text-underline-offset:3px;cursor:pointer;padding:6px 0 0 0;text-align:left;width:100%;}
+  .srs-info-link:hover{color:var(--accent);border-color:transparent;}
+  .srs-info-box{overflow-y:auto;}
+  .srs-info-section{margin-top:14px;padding-top:14px;border-top:1px solid var(--rule);}
+  .srs-info-section h4{font-family:'Spectral',serif;font-size:14px;color:var(--accent);margin:0 0 8px 0;}
+  .srs-info-section p{font-size:13px;color:var(--ink);line-height:1.5;margin:0 0 8px 0;}
+  .srs-info-section ul{margin:0;padding-left:18px;}
+  .srs-info-section li{font-size:12.5px;color:var(--ink);line-height:1.6;margin-bottom:4px;}
   .modal-box h3{font-family:'Spectral',serif;font-size:19px;margin:0 0 6px 0;}
   .modal-message{font-family:'Inter',sans-serif;font-size:13px;color:var(--ink-muted);margin:0 0 14px 0;line-height:1.5;}
   .modal-field{margin-bottom:14px;}
@@ -1278,6 +1286,86 @@ summary:focus-visible,
   outline-offset:2px;
 }
 
+/* ---------- Session reward popup ---------- */
+#sessionRewardOverlay{ z-index:1100; }
+.reward-pop{
+  position:relative;
+  width:min(90vw,380px);
+  padding:34px 28px 26px;
+  border:1px solid var(--rule);
+  border-radius:16px;
+  background:linear-gradient(180deg, var(--panel-3), var(--panel));
+  box-shadow:0 40px 100px rgba(0,0,0,.5), 0 0 0 1px rgba(215,173,99,.08);
+  text-align:center;
+  overflow:hidden;
+  animation:rewardPop .42s cubic-bezier(.2,1.4,.4,1);
+}
+.reward-badge{
+  width:64px;height:64px;line-height:64px;margin:0 auto 14px;
+  border-radius:50%;
+  background:radial-gradient(circle at 35% 30%, var(--teal), #2f7767);
+  color:#0b0e0d;
+  font-size:30px;font-weight:800;
+  box-shadow:0 0 0 6px var(--teal-soft), 0 14px 30px rgba(99,181,158,.35);
+  animation:rewardBadgePop .5s .1s cubic-bezier(.2,1.6,.4,1) both, rewardGlow 1.8s 0.5s ease-in-out infinite;
+}
+.reward-title{
+  margin:0 0 4px;
+  font-family:'Spectral',serif;
+  font-size:21px;
+  color:var(--ink);
+  animation:rewardFadeUp .4s .15s both;
+}
+.reward-sub{
+  margin:0 0 18px;
+  font-size:12.5px;
+  color:var(--ink-muted);
+  animation:rewardFadeUp .4s .2s both;
+}
+.reward-pop .big-stats{ justify-content:center; animation:rewardFadeUp .4s .25s both; }
+.reward-close-btn{
+  margin-top:20px;
+  width:100%;
+  animation:rewardFadeUp .4s .3s both;
+}
+.reward-confetti{ position:absolute; inset:0; pointer-events:none; overflow:hidden; }
+.reward-confetti span{
+  position:absolute;
+  top:-10%;
+  width:6px;height:10px;
+  border-radius:1px;
+  opacity:0;
+  animation:rewardConfettiFall 1.1s ease-in forwards;
+}
+@keyframes rewardPop{
+  0%{opacity:0; transform:scale(.82) translateY(10px);}
+  60%{opacity:1;}
+  100%{opacity:1; transform:scale(1) translateY(0);}
+}
+@keyframes rewardBadgePop{
+  0%{transform:scale(0); opacity:0;}
+  70%{transform:scale(1.15); opacity:1;}
+  100%{transform:scale(1);}
+}
+@keyframes rewardGlow{
+  0%,100%{box-shadow:0 0 0 6px var(--teal-soft), 0 14px 30px rgba(99,181,158,.35);}
+  50%{box-shadow:0 0 0 10px var(--teal-soft), 0 14px 34px rgba(99,181,158,.5);}
+}
+@keyframes rewardFadeUp{
+  from{opacity:0; transform:translateY(6px);}
+  to{opacity:1; transform:translateY(0);}
+}
+@keyframes rewardConfettiFall{
+  0%{opacity:0; transform:translateY(0) rotate(0deg);}
+  10%{opacity:1;}
+  100%{opacity:0; transform:translateY(220px) rotate(360deg);}
+}
+@media (prefers-reduced-motion:reduce){
+  .reward-pop, .reward-badge, .reward-title, .reward-sub, .reward-pop .big-stats, .reward-close-btn, .reward-confetti span{
+    animation:none!important;
+  }
+}
+
 /* ---------- Motion ---------- */
 @keyframes tfFade{from{opacity:0}to{opacity:1}}
 @keyframes tfModal{
@@ -1447,6 +1535,7 @@ summary:focus-visible,
           </div>
           <button id="btnStartTraining" class="primary start-training-btn">Start Training</button>
           <div class="hint">Tests you line-by-line from the starting position.</div>
+          <button id="btnSrsInfo" type="button" class="srs-info-link">How does the training algorithm work?</button>
         </div>
       </div>
 
@@ -1775,6 +1864,65 @@ summary:focus-visible,
     <div class="modal-actions">
       <button id="analysisReportClose" class="primary">Close Report</button>
     </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="srsInfoOverlay">
+  <div class="modal-box srs-info-box" style="width: min(90vw, 620px);">
+    <h3>How the training algorithm works</h3>
+    <p class="modal-message">TurnFlow schedules each move in your repertoire on its own timeline, based on how well you know it — a spaced repetition system (SRS). The better you know a line, the longer TurnFlow waits before testing it again.</p>
+
+    <div class="srs-info-section">
+      <h4>1. Learning a new (or relearning a lapsed) line</h4>
+      <p>The first time you see a move — or any time you get it wrong — it starts in a short <strong>learning phase</strong>, tested again soon on the same day rather than being scheduled far into the future:</p>
+      <ul>
+        <li><strong>Correct, 1st time:</strong> retested <strong>20 minutes</strong> later.</li>
+        <li><strong>Correct again</strong> at that 20-minute check: the line <strong>graduates</strong> and moves to the day-based schedule below.</li>
+        <li><strong>Used a hint</strong> or <strong>struggled</strong> (several retries): retested in <strong>10 minutes</strong>, learning phase restarts.</li>
+        <li><strong>Wrong</strong> or <strong>revealed the answer</strong>: retested in <strong>5 minutes</strong>, learning phase restarts.</li>
+      </ul>
+    </div>
+
+    <div class="srs-info-section">
+      <h4>2. Graduated lines: day-based intervals</h4>
+      <p>Once a line graduates, each further correct answer pushes its next review further away:</p>
+      <ul>
+        <li><strong>1st graduation:</strong> next review in <strong>1 day</strong>.</li>
+        <li><strong>Next correct review:</strong> interval becomes <strong>3 days</strong>.</li>
+        <li><strong>Every correct review after that:</strong> the interval is multiplied by <strong>×1.5</strong> and rounded (e.g. 3 → 5 → 7 → 11 days…), so well-known lines get reviewed less and less often.</li>
+        <li>Any mistake at this stage — wrong move, hint, or struggle — drops the line straight back into the learning phase (step 1), so it doesn't keep a long interval it hasn't earned.</li>
+      </ul>
+    </div>
+
+    <div class="srs-info-section">
+      <h4>3. What counts as "due"</h4>
+      <p>A line appears in your <strong>Due (SRS)</strong> queue as soon as the current time passes its scheduled review time — whether that's 20 minutes from now or weeks away. The Training tab shows what's due right now, and flags what's due later today so you know it's coming without it cluttering your session.</p>
+    </div>
+
+    <div class="srs-info-section">
+      <h4>4. How the dashboard labels a line</h4>
+      <ul>
+        <li><strong>Fresh:</strong> never attempted yet.</li>
+        <li><strong>Struggling:</strong> wrong on more than 40% of attempts, or 3+ wrong attempts total.</li>
+        <li><strong>Mastered:</strong> interval has grown to 14 days or more.</li>
+        <li><strong>Learning:</strong> everything in between — including lines still in the 20-minute learning phase.</li>
+      </ul>
+    </div>
+
+    <div class="modal-actions">
+      <button id="srsInfoClose" class="primary">Close</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="sessionRewardOverlay">
+  <div class="reward-pop" id="rewardPop">
+    <div class="reward-confetti" id="rewardConfetti"></div>
+    <div class="reward-badge">✓</div>
+    <h3 class="reward-title">All caught up!</h3>
+    <p class="reward-sub" id="rewardSub">You cleared every due move.</p>
+    <div class="big-stats" id="rewardStats"></div>
+    <button id="rewardClose" class="primary reward-close-btn">Nice</button>
   </div>
 </div>
 
@@ -2113,9 +2261,10 @@ window.reloadUserDataForActiveUser = async function reloadUserDataForActiveUser(
   function makeBlankRoot(){ return { id:0, san:null, comment:null, tags:[], visuals:{arrows:[], highlights:[]}, stats: null, fen: new Chess().fen(), parent:null, children:[] }; }
   
   function ensureStats(node){ 
-    if (!node.stats) node.stats = { attempts:0, correct:0, incorrect:0, interval:0, dueDate:0 };
+    if (!node.stats) node.stats = { attempts:0, correct:0, incorrect:0, interval:0, dueDate:0, learningStep:0 };
     if (node.stats.interval === undefined) node.stats.interval = 0;
     if (node.stats.dueDate === undefined) node.stats.dueDate = 0;
+    if (node.stats.learningStep === undefined) node.stats.learningStep = 0;
     return node.stats; 
   }
   
@@ -2128,22 +2277,42 @@ window.reloadUserDataForActiveUser = async function reloadUserDataForActiveUser(
     // A review is not considered a clean success if the player needed
     // a retry, a hint, or the answer was revealed. Struggled moves enter
     // a short relearning phase before returning to normal SRS.
+    //
+    // New or relapsed lines (interval === 0) go through a short learning
+    // phase before graduating to day-based intervals: the first correct
+    // answer reschedules the card 20 minutes later (same day) rather than
+    // jumping straight to "tomorrow"; only a second consecutive correct
+    // answer at that point graduates the card to the 1-day interval.
     if (result === 'correct') {
-      if (stats.interval === 0) stats.interval = 1;
-      else if (stats.interval === 1) stats.interval = 3;
-      else stats.interval = Math.round(stats.interval * 1.5);
-      stats.dueDate = now + stats.interval * 86400000;
+      if (stats.interval === 0) {
+        if (stats.learningStep === 0) {
+          stats.learningStep = 1;
+          stats.dueDate = now + MINUTES(20);
+        } else {
+          stats.learningStep = 0;
+          stats.interval = 1;
+          stats.dueDate = now + stats.interval * 86400000;
+        }
+      } else {
+        if (stats.interval === 1) stats.interval = 3;
+        else stats.interval = Math.round(stats.interval * 1.5);
+        stats.dueDate = now + stats.interval * 86400000;
+      }
     } else if (result === 'hint') {
       stats.interval = 0;
+      stats.learningStep = 0;
       stats.dueDate = now + MINUTES(10);
     } else if (result === 'struggle') {
       stats.interval = 0;
+      stats.learningStep = 0;
       stats.dueDate = now + MINUTES(10);
     } else if (result === 'revealed') {
       stats.interval = 0;
+      stats.learningStep = 0;
       stats.dueDate = now + MINUTES(5);
     } else if (result === 'wrong') {
       stats.interval = 0;
+      stats.learningStep = 0;
       stats.dueDate = now + MINUTES(5);
     }
   }
@@ -3245,6 +3414,23 @@ window.reloadUserDataForActiveUser = async function reloadUserDataForActiveUser(
 
   document.getElementById('analysisReportClose').addEventListener('click', () => {
     document.getElementById('analysisReportOverlay').classList.remove('show');
+  });
+
+  document.getElementById('btnSrsInfo').addEventListener('click', () => {
+    document.getElementById('srsInfoOverlay').classList.add('show');
+  });
+  document.getElementById('srsInfoClose').addEventListener('click', () => {
+    document.getElementById('srsInfoOverlay').classList.remove('show');
+  });
+  document.getElementById('srsInfoOverlay').addEventListener('click', (e) => {
+    if (e.target.id === 'srsInfoOverlay') document.getElementById('srsInfoOverlay').classList.remove('show');
+  });
+
+  document.getElementById('rewardClose').addEventListener('click', () => {
+    document.getElementById('sessionRewardOverlay').classList.remove('show');
+  });
+  document.getElementById('sessionRewardOverlay').addEventListener('click', (e) => {
+    if (e.target.id === 'sessionRewardOverlay') document.getElementById('sessionRewardOverlay').classList.remove('show');
   });
 
   function getModifierColor(e){
@@ -5000,7 +5186,7 @@ function nodeHasVisibleDot(node){
   function startNextLine() {
     if (!trainSession) return;
     trainSession.qIndex++;
-    if (trainSession.qIndex >= trainSession.queue.length) { endTrainingSession(false); return; }
+    if (trainSession.qIndex >= trainSession.queue.length) { endTrainingSession(false, true); return; }
 
     const leaf = trainSession.queue[trainSession.qIndex];
     trainSession.currentPath = getPathTo(leaf);
@@ -5277,7 +5463,7 @@ function nodeHasVisibleDot(node){
     if (squareEl) squareEl.classList.add('training-hint');
   }
 
-  function endTrainingSession(silent){
+  function endTrainingSession(silent, natural){
     if (!trainSession) return;
     const { total, correct, incorrect } = trainSession.stats;
     if (total > 0){
@@ -5299,6 +5485,7 @@ function nodeHasVisibleDot(node){
       persistActiveTree();
       updateDueBadge();
       if (!silent) renderTrainViewDone(summary);
+      if (!silent && natural) showSessionRewardPopup(summary);
     } else if (!silent){
       renderTrainViewIdle();
     }
@@ -5332,6 +5519,33 @@ function nodeHasVisibleDot(node){
         '</table></div>';
     }
     body.innerHTML = html;
+  }
+
+  function showSessionRewardPopup(summary){
+    const statsHtml =
+      '<div class="big-stat"><span class="num">' + summary.correct + '</span><span class="lbl">Correct</span></div>' +
+      '<div class="big-stat"><span class="num">' + summary.accuracy + '%</span><span class="lbl">Accuracy</span></div>' +
+      '<div class="big-stat"><span class="num">' + fmtDuration(summary.duration) + '</span><span class="lbl">Time</span></div>';
+    document.getElementById('rewardStats').innerHTML = statsHtml;
+
+    const subEl = document.getElementById('rewardSub');
+    subEl.textContent = summary.incorrect === 0
+      ? 'Perfect session — every due move, nailed.'
+      : 'You cleared every due move for now.';
+
+    const confettiEl = document.getElementById('rewardConfetti');
+    const colors = ['var(--accent)', 'var(--teal)', 'var(--danger)', 'var(--ink-soft)'];
+    let pieces = '';
+    for (let i = 0; i < 18; i++){
+      const left = Math.random() * 100;
+      const delay = (Math.random() * 0.25).toFixed(2);
+      const duration = (0.9 + Math.random() * 0.6).toFixed(2);
+      const color = colors[i % colors.length];
+      pieces += '<span style="left:' + left + '%; background:' + color + '; animation-delay:' + delay + 's; animation-duration:' + duration + 's;"></span>';
+    }
+    confettiEl.innerHTML = pieces;
+
+    document.getElementById('sessionRewardOverlay').classList.add('show');
   }
 
   function renderTrainViewDone(summary){
