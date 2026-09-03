@@ -251,10 +251,11 @@
   .toast.show{opacity:1;}
 
   .train-view-empty{font-family:'Inter',sans-serif;font-size:13px;color:var(--ink-muted);font-style:italic;padding:14px 0;}
-  .session-summary .big-stats{display:flex;gap:22px;margin:14px 0 18px 0;}
-  .session-summary .big-stat{text-align:center;}
-  .session-summary .big-stat .num{font-family:'Spectral',serif;font-size:32px;color:var(--accent);display:block;}
-  .session-summary .big-stat .lbl{font-family:'JetBrains Mono',monospace;font-size:10px;text-transform:uppercase;color:var(--ink-muted);letter-spacing:0.5px;}
+  .big-stats{display:flex;gap:22px;}
+  .big-stat{text-align:center;}
+  .big-stat .num{font-family:'Spectral',serif;font-size:32px;color:var(--accent);display:block;}
+  .big-stat .lbl{font-family:'JetBrains Mono',monospace;font-size:10px;text-transform:uppercase;color:var(--ink-muted);letter-spacing:0.5px;display:block;margin-top:2px;}
+  .session-summary .big-stats{margin:14px 0 18px 0;}
   .session-summary-actions{display:flex;gap:8px;margin-top:6px;}
   .recent-sessions{margin-top:18px;}
   .recent-sessions h3{font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:1px;text-transform:uppercase;color:var(--ink-muted);margin:0 0 10px 0;}
@@ -1290,7 +1291,7 @@ summary:focus-visible,
 #sessionRewardOverlay{ z-index:1100; }
 .reward-pop{
   position:relative;
-  width:min(90vw,380px);
+  width:min(90vw,420px);
   padding:34px 28px 26px;
   border:1px solid var(--rule);
   border-radius:16px;
@@ -1322,7 +1323,8 @@ summary:focus-visible,
   color:var(--ink-muted);
   animation:rewardFadeUp .4s .2s both;
 }
-.reward-pop .big-stats{ justify-content:center; animation:rewardFadeUp .4s .25s both; }
+.reward-pop .big-stats{ justify-content:center; gap:16px; flex-wrap:wrap; animation:rewardFadeUp .4s .25s both; }
+.reward-pop .big-stat .num{ font-size:24px; }
 .reward-close-btn{
   margin-top:20px;
   width:100%;
@@ -5522,10 +5524,12 @@ function nodeHasVisibleDot(node){
   }
 
   function showSessionRewardPopup(summary){
+    const avgMoveStr = summary.avgResponse ? (summary.avgResponse / 1000).toFixed(1) + 's' : '—';
     const statsHtml =
       '<div class="big-stat"><span class="num">' + summary.correct + '</span><span class="lbl">Correct</span></div>' +
       '<div class="big-stat"><span class="num">' + summary.accuracy + '%</span><span class="lbl">Accuracy</span></div>' +
-      '<div class="big-stat"><span class="num">' + fmtDuration(summary.duration) + '</span><span class="lbl">Time</span></div>';
+      '<div class="big-stat"><span class="num">' + fmtDuration(summary.duration) + '</span><span class="lbl">Time</span></div>' +
+      '<div class="big-stat"><span class="num">' + avgMoveStr + '</span><span class="lbl">Avg / Move</span></div>';
     document.getElementById('rewardStats').innerHTML = statsHtml;
 
     const subEl = document.getElementById('rewardSub');
