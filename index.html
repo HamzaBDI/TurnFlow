@@ -327,6 +327,41 @@
     gap: 8px;
     margin-top: 10px;
   }
+  .analysis-hover-board {
+    position: fixed;
+    z-index: 10050;
+    width: 220px;
+    height: 220px;
+    padding: 8px;
+    border: 1px solid var(--rule);
+    border-radius: 8px;
+    background: var(--panel);
+    box-shadow: 0 14px 36px rgba(0,0,0,.22);
+    pointer-events: none;
+    opacity: 0;
+    transform: translateY(4px) scale(.98);
+    transition: opacity .12s ease, transform .12s ease;
+  }
+  .analysis-hover-board.show { opacity: 1; transform: translateY(0) scale(1); }
+  .analysis-hover-board .mini-board {
+    width: 100%; height: 100%; display: grid; grid-template-columns: repeat(8, 1fr);
+    overflow: hidden; border-radius: 4px;
+  }
+  .analysis-hover-board .mini-sq { position: relative; aspect-ratio: 1; display:flex; align-items:center; justify-content:center; }
+  .analysis-hover-board .mini-sq.light { background: var(--board-light, #f0d9b5); }
+  .analysis-hover-board .mini-sq.dark { background: var(--board-dark, #b58863); }
+  .analysis-hover-board .mini-sq img { width: 88%; height: 88%; object-fit: contain; user-select:none; }
+  .analysis-hover-board .mini-sq.last-from,
+  .analysis-hover-board .mini-sq.last-to { box-shadow: inset 0 0 0 999px rgba(255, 214, 72, .32); }
+  .analysis-hover-board .mini-label {
+    position:absolute; left:7px; bottom:5px; font: 700 9px 'JetBrains Mono',monospace;
+    color: var(--ink-muted); background: color-mix(in srgb, var(--panel) 78%, transparent); padding:2px 4px; border-radius:3px;
+  }
+  .analysis-hover-board .mini-move-label {
+    position:absolute; left:50%; top:-27px; transform:translateX(-50%); white-space:nowrap;
+    font: 600 10px 'JetBrains Mono',monospace; color:var(--ink); background:var(--panel);
+    border:1px solid var(--rule); border-radius:4px; padding:4px 7px; box-shadow:0 6px 18px rgba(0,0,0,.12);
+  }
   .verify-row {
     display: flex;
     align-items: center;
@@ -1692,8 +1727,11 @@ summary:focus-visible,
               <div class="fb-actions" id="fbActions"></div>
             </div>
             <div class="controls" style="margin-top: 12px;">
+              <button id="btnTrainPrev" type="button">◀ Previous move</button>
+              <button id="btnTrainNext" type="button">Next move ▶</button>
               <button id="btnEndSession">End session</button>
             </div>
+            <div class="hint">Use Previous move / Next move, or the Left / Right arrow keys, to review how you reached the position being tested.</div>
           </div>
           <div id="trainViewBody"></div>
         </div>
@@ -3612,9 +3650,85 @@ const ECO_OPENINGS_DATA = `{"rnbqkbnr/pppppppp/8/8/8/7N/PPPPPPPP/RNBQKB1R b KQkq
     return entries;
   }
 
+  let analysisHoverBoardEl = null;
+
+  function ensureAnalysisHoverBoard() {
+    if (analysisHoverBoardEl) return analysisHoverBoardEl;
+    analysisHoverBoardEl = document.createElement('div');
+    analysisHoverBoardEl.className = 'analysis-hover-board';
+    analysisHoverBoardEl.innerHTML = '<div class="mini-board"></div>';
+    document.body.appendChild(analysisHoverBoardEl);
+    return analysisHoverBoardEl;
+  }
+
+  function positionAnalysisHoverBoard(row) {
+    const popup = ensureAnalysisHoverBoard();
+    const rect = row.getBoundingClientRect();
+    const gap = 12;
+    const w = 220;
+    const h = 220;
+    let left = rect.right + gap;
+    let top = rect.top;
+    if (left + w > window.innerWidth - 8) left = rect.left - w - gap;
+    if (top + h > window.innerHeight - 8) top = Math.max(8, window.innerHeight - h - 8);
+    if (top < 8) top = 8;
+    popup.style.left = left + 'px';
+    popup.style.top = top + 'px';
+  }
+
+  function renderAnalysisHoverBoard(data, moveLabel) {
+    if (!data || !data.fenBefore || !data.san) return;
+    try {
+      const previewChess = new Chess(data.fenBefore);
+      const moveObj = previewChess.move(data.san);
+      if (!moveObj) return;
+      const popup = ensureAnalysisHoverBoard();
+      const mini = popup.querySelector('.mini-board');
+      mini.innerHTML = '';
+      const order = buildSquareOrder();
+      order.forEach(([file, rank]) => {
+        const sq = squareId(file, rank);
+        const div = document.createElement('div');
+        const isLight = (file + rank) % 2 === 1;
+        div.className = 'mini-sq ' + (isLight ? 'light' : 'dark');
+        div.dataset.square = sq;
+        const piece = previewChess.get(sq);
+        if (piece) {
+          const img = document.createElement('img');
+          img.src = PIECE_URLS[piece.color][piece.type];
+          img.draggable = false;
+          div.appendChild(img);
+        }
+        if (sq === moveObj.from) div.classList.add('last-from');
+        if (sq === moveObj.to) div.classList.add('last-to');
+        mini.appendChild(div);
+      });
+      const label = document.createElement('div');
+      label.className = 'mini-move-label';
+      label.textContent = moveLabel || data.san;
+      popup.appendChild(label);
+      popup.classList.add('show');
+    } catch (e) {
+      console.warn('Could not render Analysis Sync mini-board:', e);
+    }
+  }
+
+  function hideAnalysisHoverBoard() {
+    if (!analysisHoverBoardEl) return;
+    analysisHoverBoardEl.classList.remove('show');
+    const label = analysisHoverBoardEl.querySelector('.mini-move-label');
+    if (label) label.remove();
+  }
+
   function buildMoveRow(moveLabel, data, countColor, verb) {
     const row = document.createElement('div');
     row.className = 'verify-row';
+    row.title = 'Hover to preview this position';
+    row.addEventListener('mouseenter', () => {
+      positionAnalysisHoverBoard(row);
+      renderAnalysisHoverBoard(data, moveLabel);
+    });
+    row.addEventListener('mouseleave', hideAnalysisHoverBoard);
     const content = document.createElement('div');
     content.className = 'verify-content';
 
@@ -3788,6 +3902,12 @@ const ECO_OPENINGS_DATA = `{"rnbqkbnr/pppppppp/8/8/8/7N/PPPPPPPP/RNBQKB1R b KQkq
   function renderVisualAnnotations(){
     if (!svgOverlay) return;
     svgOverlay.innerHTML = '';
+
+    // Study annotations (arrows/highlights) belong exclusively to Study mode.
+    // Never render them while Training is active, including when the user
+    // navigates backward/forward through the training line.
+    if (mode !== 'study') return;
+
     const visuals = current.visuals || { arrows: [], highlights: [] };
 
     visuals.highlights.forEach(h => {
@@ -3920,12 +4040,15 @@ const ECO_OPENINGS_DATA = `{"rnbqkbnr/pppppppp/8/8/8/7N/PPPPPPPP/RNBQKB1R b KQkq
       div.addEventListener('mousedown', (e) => {
         if (e.button === 2) {
           e.preventDefault();
-          rightDragFrom = sq;
+          if (mode === 'study') rightDragFrom = sq;
+          else rightDragFrom = null;
         }
       });
       div.addEventListener('mouseup', (e) => {
         if (e.button === 2 && rightDragFrom) {
           e.preventDefault();
+          // Right-drag annotations are a Study-only interaction.
+          if (mode !== 'study') { rightDragFrom = null; return; }
           const color = getModifierColor(e);
           current.visuals = current.visuals || { arrows: [], highlights: [] };
           
@@ -4880,6 +5003,8 @@ function nodeHasVisibleDot(node){
 
   document.getElementById('btnStartTraining').addEventListener('click', ()=> startTraining(trainKind, trainCount));
   document.getElementById('btnEndSession').addEventListener('click', ()=> endTrainingSession(false));
+  document.getElementById('btnTrainPrev').addEventListener('click', trainingPreviousMove);
+  document.getElementById('btnTrainNext').addEventListener('click', trainingNextMove);
 
   function getAllLeaves(){
     const leaves = [];
@@ -5533,7 +5658,8 @@ function nodeHasVisibleDot(node){
       kind, stats: { total: 0, correct: 0, incorrect: 0 }, 
       startTime: Date.now(), awaiting: false, queue: activeLines, qIndex: -1,
       testedIds: new Set(), currentPath: null, pathIndex: 0,
-      totalResponseMs: 0, recordedMoves: 0
+      totalResponseMs: 0, recordedMoves: 0,
+      reviewing: false, reviewAnchorIndex: null, reviewResumeAwaiting: false
     };
 
     hideFeedback();
@@ -5549,6 +5675,9 @@ function nodeHasVisibleDot(node){
     const leaf = trainSession.queue[trainSession.qIndex];
     trainSession.currentPath = getPathTo(leaf);
     trainSession.pathIndex = 0;
+    trainSession.reviewing = false;
+    trainSession.reviewAnchorIndex = null;
+    trainSession.reviewResumeAwaiting = false;
     current = root;
     chess.load(root.fen);
     lastMove = null; selected = null; legalTargets = [];
@@ -5557,7 +5686,7 @@ function nodeHasVisibleDot(node){
   }
 
   function advanceLine() {
-    if (!trainSession) return;
+    if (!trainSession || trainSession.reviewing) return;
     const path = trainSession.currentPath;
     const idx = trainSession.pathIndex;
     if (idx >= path.length - 1) { startNextLine(); return; }
@@ -5599,7 +5728,9 @@ function nodeHasVisibleDot(node){
   }
 
   function handleTrainingMove(from, to, promotion){
-    if (!trainSession || !trainSession.awaiting) return;
+    if (!trainSession || !trainSession.awaiting || trainSession.reviewing) return;
+    // A mistake does not lock the trainee out: the next move can be attempted immediately.
+    hideFeedback();
 
     trainSession.totalResponseMs += (Date.now() - trainSession.moveStartTime);
     trainSession.recordedMoves++;
@@ -5629,6 +5760,9 @@ function nodeHasVisibleDot(node){
       processSRS(expectedNextNode, reviewResult);
       trainSession.testedIds.add(expectedNextNode.id);
       trainSession.awaiting = false;
+      trainSession.reviewing = false;
+      trainSession.reviewAnchorIndex = null;
+      trainSession.reviewResumeAwaiting = false;
       trainSession.hintUsed = false;
       trainSession.hadMistake = false;
       trainSession.hadHint = false;
@@ -5658,9 +5792,10 @@ function nodeHasVisibleDot(node){
   }
 
   function handleAlternateMove(expectedNextNode, matchedChild, playedSan, from, to, piece) {
-    trainSession.awaiting = false;
+    trainSession.awaiting = true;
     clearTrainingHint();
     showFeedback('alternate', expectedNextNode, matchedChild, playedSan);
+    ensureActiveTrainingHintButton(expectedNextNode);
     persistActiveTree();
 
     animatePiece(to, from, piece.color, piece.type, () => { renderBoard(); }, false, 220);
@@ -5669,14 +5804,14 @@ function nodeHasVisibleDot(node){
   function handleIncorrectMove(expectedNextNode, playedSan, from, to, piece) {
     trainSession.stats.incorrect++;
     trainSession.hadMistake = true;
-    const activeHintBtn = document.getElementById('btnActiveTrainingHint');
-    if (activeHintBtn) activeHintBtn.style.display = 'none';
     expectedNextNode.stats.incorrect++;
     processSRS(expectedNextNode, false);
     trainSession.testedIds.add(expectedNextNode.id);
-    trainSession.awaiting = false;
+    // Keep the tested position active so the user can immediately try again.
+    trainSession.awaiting = true;
     clearTrainingHint();
     showFeedback(false, expectedNextNode, null, playedSan);
+    ensureActiveTrainingHintButton(expectedNextNode);
     persistActiveTree();
 
     animatePiece(to, from, piece.color, piece.type, () => { renderBoard(); }, false, 220);
@@ -5690,6 +5825,7 @@ function nodeHasVisibleDot(node){
     const currentNode = trainSession.currentPath && trainSession.currentPath[trainSession.pathIndex];
     const expectedNextNode = trainSession.currentPath && trainSession.currentPath[trainSession.pathIndex + 1];
     if (trainSession.awaiting && expectedNextNode) ensureActiveTrainingHintButton(expectedNextNode);
+    renderTrainingNavigation();
   }
 
 
@@ -5787,6 +5923,9 @@ function nodeHasVisibleDot(node){
         lastMove = { from: m.from, to: m.to };
         renderBoard();
         trainSession.pathIndex++;
+        trainSession.reviewing = false;
+        trainSession.reviewAnchorIndex = null;
+        trainSession.reviewResumeAwaiting = false;
         trainSession.hintUsed = false;
         trainSession.hadMistake = false;
         trainSession.hadHint = false;
@@ -5819,6 +5958,79 @@ function nodeHasVisibleDot(node){
     trainingHintSquares = [move.from];
     const squareEl = boardEl.querySelector('.sq[data-square="' + move.from + '"]');
     if (squareEl) squareEl.classList.add('training-hint');
+  }
+
+  function renderTrainingNavigation(){
+    const prev = document.getElementById('btnTrainPrev');
+    const next = document.getElementById('btnTrainNext');
+    if (!prev || !next || !trainSession) return;
+    const idx = trainSession.pathIndex;
+    const path = trainSession.currentPath || [];
+    const anchor = trainSession.reviewing ? trainSession.reviewAnchorIndex : idx;
+    prev.disabled = idx <= 0;
+    next.disabled = !trainSession.reviewing || idx >= anchor;
+  }
+
+  function getTrainingLastMove(index){
+    if (!trainSession || index <= 0) return null;
+    const prevNode = trainSession.currentPath[index - 1];
+    const node = trainSession.currentPath[index];
+    if (!prevNode || !node) return null;
+    const temp = new Chess(prevNode.fen);
+    const m = temp.move(node.san);
+    return m ? { from: m.from, to: m.to } : null;
+  }
+
+  function renderTrainingPathPosition(index){
+    if (!trainSession || !trainSession.currentPath) return;
+    const path = trainSession.currentPath;
+    index = Math.max(0, Math.min(index, path.length - 1));
+    trainSession.pathIndex = index;
+    const node = path[index];
+    if (!node) return;
+    chess.load(node.fen);
+    current = node;
+    lastMove = getTrainingLastMove(index);
+    selected = null;
+    legalTargets = [];
+    renderBoard();
+    renderTrainingNavigation();
+  }
+
+  function trainingPreviousMove(){
+    if (!trainSession || trainSession.pathIndex <= 0) return;
+    if (!trainSession.reviewing){
+      trainSession.reviewing = true;
+      trainSession.reviewAnchorIndex = trainSession.pathIndex;
+      trainSession.reviewResumeAwaiting = trainSession.awaiting;
+      hideFeedback();
+      clearTrainingHint();
+    }
+    renderTrainingPathPosition(trainSession.pathIndex - 1);
+  }
+
+  function trainingNextMove(){
+    if (!trainSession || !trainSession.reviewing) return;
+    const anchor = trainSession.reviewAnchorIndex;
+    if (trainSession.pathIndex < anchor){
+      renderTrainingPathPosition(trainSession.pathIndex + 1);
+    }
+    if (trainSession.pathIndex === anchor){
+      trainSession.reviewing = false;
+      trainSession.reviewAnchorIndex = null;
+      trainSession.awaiting = trainSession.reviewResumeAwaiting;
+      trainSession.reviewResumeAwaiting = false;
+      current = trainSession.currentPath[anchor];
+      chess.load(current.fen);
+      lastMove = getTrainingLastMove(anchor);
+      selected = null;
+      legalTargets = [];
+      renderTrainActive();
+      renderBoard();
+      const expected = trainSession.currentPath[anchor + 1];
+      if (trainSession.awaiting && expected) ensureActiveTrainingHintButton(expected);
+      renderTrainingNavigation();
+    }
   }
 
   function endTrainingSession(silent, natural){
@@ -6038,6 +6250,11 @@ function nodeHasVisibleDot(node){
   document.addEventListener('keydown', (e) => {
     const activeTag = document.activeElement ? document.activeElement.tagName.toLowerCase() : '';
     if (activeTag === 'input' || activeTag === 'textarea') return;
+
+    if (mode === 'train' && trainSession) {
+      if (e.key === 'ArrowLeft') { e.preventDefault(); trainingPreviousMove(); return; }
+      if (e.key === 'ArrowRight') { e.preventDefault(); trainingNextMove(); return; }
+    }
 
     if (mode === 'study') {
       if (activeContinuationBox) {
