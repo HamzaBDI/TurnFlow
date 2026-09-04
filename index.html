@@ -867,8 +867,8 @@ button:disabled{opacity:.32;transform:none!important}
 .rep-outline-loading,.rep-outline-empty{font-family:Inter,ui-sans-serif,sans-serif;font-size:10.5px;font-style:italic;color:var(--ink-faint);padding:3px 4px;}
 .rep-outline-list{list-style:none;margin:0;padding:0 0 0 12px;border-left:1px solid var(--rule-soft);}
 .rep-outline-list > li{margin:1px 0;}
-.rep-outline-item-row{display:flex;align-items:center;gap:2px;min-width:0;}
-.rep-outline-label{display:block;flex:1;min-width:0;font-family:Inter,ui-sans-serif,sans-serif;font-size:11px;line-height:1.5;padding:2px 6px;border-radius:5px;color:var(--ink-soft);cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.rep-outline-item-row{display:flex;align-items:flex-start;gap:2px;min-width:0;}
+.rep-outline-label{display:block;flex:1;min-width:0;font-family:Inter,ui-sans-serif,sans-serif;font-size:11px;line-height:1.4;padding:2px 6px;border-radius:5px;color:var(--ink-soft);cursor:pointer;white-space:normal;overflow-wrap:break-word;word-break:break-word;}
 .rep-outline-label:hover{background:rgba(255,255,255,.05);color:var(--accent-bright);}
 .rep-outline-chapter .rep-outline-label{font-weight:600;color:var(--ink-soft);}
 .rep-outline-sideline .rep-outline-label{font-style:italic;color:var(--ink-faint);font-weight:400;}
@@ -1521,6 +1521,9 @@ summary:focus-visible,
     <div class="header-actions">
       <div id="statusChip" class="status-chip">White to move</div>
       <span id="userDisplayName" style="font-family:'JetBrains Mono',monospace; font-size:12px; color:var(--accent); display:none;"></span>
+      <button id="btnBackupAll" class="mini-btn" title="Download a full backup of every repertoire, comment and stat as a JSON file" aria-label="Download full backup">⇩ Backup</button>
+      <button id="btnRestoreAll" class="mini-btn" title="Restore repertoires from a backup JSON file previously downloaded" aria-label="Restore from backup">⇧ Restore</button>
+      <input type="file" id="restoreFileInput" accept="application/json" style="display:none;">
       <button id="btnOpenAuth" class="primary">Log In / Sign Up</button>
       <button id="btnSignOut" class="danger" style="display:none;">Log Out</button>
     </div>
@@ -1846,6 +1849,14 @@ summary:focus-visible,
 </nav>
 
 <div class="toast" id="toast"></div>
+<div id="undoToast" role="status" aria-live="assertive" style="display:none;position:fixed;left:50%;bottom:70px;transform:translateX(-50%);z-index:9999;background:#2a2a2a;color:#fff;font-family:Inter,ui-sans-serif,sans-serif;font-size:13px;padding:9px 10px 9px 16px;border-radius:8px;align-items:center;gap:12px;box-shadow:0 4px 16px rgba(0,0,0,.35);">
+  <span id="undoToastText"></span>
+  <button id="undoToastBtn" type="button" style="background:rgba(255,255,255,.15);border:1px solid rgba(255,255,255,.4);color:#fff;border-radius:5px;padding:4px 12px;cursor:pointer;font-size:13px;font-weight:600;">Undo</button>
+</div>
+<div id="syncBanner" role="status" aria-live="polite" style="display:none;position:fixed;left:0;right:0;bottom:0;z-index:9999;background:#7a3b2e;color:#fff;font-family:Inter,ui-sans-serif,sans-serif;font-size:12.5px;padding:8px 14px;align-items:center;justify-content:center;gap:10px;text-align:center;">
+  <span id="syncBannerText">Some changes couldn't be saved to your account and are stored on this device only.</span>
+  <button id="syncBannerRetry" type="button" style="background:rgba(255,255,255,.15);border:1px solid rgba(255,255,255,.4);color:#fff;border-radius:5px;padding:3px 10px;cursor:pointer;font-size:12px;">Retry now</button>
+</div>
 
 <!-- Auth Modal -->
 <div class="modal-overlay" id="authOverlay">
@@ -2067,6 +2078,74 @@ function guestStorageDelete(key) {
   delete memoryStore[key];
 }
 
+// --- Sync status tracking ---------------------------------------------
+// Firestore writes can fail (offline, quota, rules). When that happens for
+// a signed-in user we must NOT silently pretend the write succeeded — the
+// data only made it to this device's local storage, not the account. We
+// track that gap here, surface it persistently (not just a toast, which
+// disappears), and retry pending writes automatically.
+const PENDING_SYNC_KEY = 'tabiya-pending-sync-keys';
+let pendingSyncKeys = new Set();
+try {
+  const raw = localStorage.getItem(PENDING_SYNC_KEY);
+  if (raw) JSON.parse(raw).forEach(k => pendingSyncKeys.add(k));
+} catch (e) {}
+
+function persistPendingSyncKeys() {
+  try { localStorage.setItem(PENDING_SYNC_KEY, JSON.stringify(Array.from(pendingSyncKeys))); } catch (e) {}
+}
+
+function updateSyncBanner() {
+  const banner = document.getElementById('syncBanner');
+  if (!banner) return;
+  if (pendingSyncKeys.size > 0 && currentUserUid) {
+    const textEl = document.getElementById('syncBannerText');
+    if (textEl) {
+      textEl.textContent = pendingSyncKeys.size === 1
+        ? "1 change couldn't be saved to your account and is stored on this device only."
+        : pendingSyncKeys.size + " changes couldn't be saved to your account and are stored on this device only.";
+    }
+    banner.style.display = 'flex';
+  } else {
+    banner.style.display = 'none';
+  }
+}
+
+async function retryPendingSyncs() {
+  if (!currentUserUid || !window.db || !window.firebaseFirestoreHelpers || pendingSyncKeys.size === 0) return;
+  const { doc, setDoc } = window.firebaseFirestoreHelpers;
+  const keys = Array.from(pendingSyncKeys);
+  for (const key of keys) {
+    try {
+      const raw = guestStorageGet(key);
+      if (raw === null) { pendingSyncKeys.delete(key); continue; }
+      const docRef = doc(window.db, "users", currentUserUid, "data", key);
+      await setDoc(docRef, { value: raw });
+      pendingSyncKeys.delete(key);
+    } catch (e) {
+      // still failing — leave it queued and try again later
+    }
+  }
+  persistPendingSyncKeys();
+  updateSyncBanner();
+}
+window.addEventListener('online', retryPendingSyncs);
+setInterval(retryPendingSyncs, 60000);
+
+// Every fetch() to a third-party API (Lichess, chessdb.cn, chess.com) used
+// to have no timeout at all, so a hung request could leave a panel stuck
+// in "loading" indefinitely with no way for the user to know it failed.
+// This wraps fetch with an AbortController-based timeout.
+async function fetchWithTimeout(url, options = {}, timeoutMs = 8000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function storeGet(key) {
   if (currentUserUid && window.db && window.firebaseFirestoreHelpers) {
     try {
@@ -2078,27 +2157,38 @@ async function storeGet(key) {
       }
     } catch (e) {
       console.warn("Firestore read failed", e);
+      // Fall through to the local copy so the UI can still show something,
+      // but this does NOT mean the account copy is up to date.
     }
   }
   return guestStorageGet(key);
 }
 
 async function storeSet(key, value) {
+  guestStorageSet(key, value); // always keep a local copy, regardless of cloud outcome
   if (currentUserUid && window.db && window.firebaseFirestoreHelpers) {
     try {
       const { doc, setDoc } = window.firebaseFirestoreHelpers;
       const docRef = doc(window.db, "users", currentUserUid, "data", key);
       await setDoc(docRef, { value });
+      if (pendingSyncKeys.delete(key)) { persistPendingSyncKeys(); updateSyncBanner(); }
       return true;
     } catch (e) {
-      console.warn("Firestore write failed", e);
+      console.warn("Firestore write failed — queued for retry", e);
+      pendingSyncKeys.add(key);
+      persistPendingSyncKeys();
+      updateSyncBanner();
+      if (window.toast) window.toast("Saved on this device only — will sync when possible");
+      return false; // honest: the account copy was NOT updated
     }
   }
-  guestStorageSet(key, value);
   return true;
 }
 
 async function storeDelete(key) {
+  guestStorageDelete(key);
+  pendingSyncKeys.delete(key); // a deleted key has nothing left to sync
+  persistPendingSyncKeys();
   if (currentUserUid && window.db && window.firebaseFirestoreHelpers) {
     try {
       const { doc, deleteDoc } = window.firebaseFirestoreHelpers;
@@ -2107,9 +2197,10 @@ async function storeDelete(key) {
       return true;
     } catch (e) {
       console.warn("Firestore delete failed", e);
+      if (window.toast) window.toast("Couldn't delete from your account — try again when online");
+      return false;
     }
   }
-  guestStorageDelete(key);
   return true;
 }
 
@@ -2167,6 +2258,7 @@ window.reloadUserDataForActiveUser = async function reloadUserDataForActiveUser(
   let orientation = 'white';
   let selected = null;
   let legalTargets = [];
+  let focusedSquareEl = null; // roving-tabindex board square for keyboard navigation
   let lastMove = null;
 
   window.repertoireIndex = [];
@@ -2449,9 +2541,19 @@ const ECO_OPENINGS_DATA = `{"rnbqkbnr/pppppppp/8/8/8/7N/PPPPPPPP/RNBQKB1R b KQkq
         || (item.type === 'chapter' ? item.name : item.label);
       label.title = displayName;
       label.textContent = displayName;
+      label.setAttribute('role', 'button');
+      label.setAttribute('tabindex', '0');
+      label.setAttribute('aria-label', 'Go to ' + displayName);
       label.addEventListener('click', (e) => {
         e.stopPropagation();
         navigateToOutlinePath(repId, item.path);
+      });
+      label.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          e.stopPropagation();
+          navigateToOutlinePath(repId, item.path);
+        }
       });
 
       const actions = document.createElement('div');
@@ -2464,6 +2566,7 @@ const ECO_OPENINGS_DATA = `{"rnbqkbnr/pppppppp/8/8/8/7N/PPPPPPPP/RNBQKB1R b KQkq
       trainBtn.type = 'button';
       trainBtn.className = 'rep-outline-action rep-outline-train';
       trainBtn.title = 'Train this line from start to finish';
+      trainBtn.setAttribute('aria-label', 'Train ' + displayName + ' from start to finish');
       trainBtn.textContent = 'Train';
       trainBtn.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -2475,6 +2578,7 @@ const ECO_OPENINGS_DATA = `{"rnbqkbnr/pppppppp/8/8/8/7N/PPPPPPPP/RNBQKB1R b KQkq
       renameBtn.type = 'button';
       renameBtn.className = 'rep-outline-action';
       renameBtn.title = 'Rename';
+      renameBtn.setAttribute('aria-label', 'Rename ' + displayName);
       renameBtn.textContent = '✎';
       renameBtn.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -2490,6 +2594,7 @@ const ECO_OPENINGS_DATA = `{"rnbqkbnr/pppppppp/8/8/8/7N/PPPPPPPP/RNBQKB1R b KQkq
       deleteBtn.type = 'button';
       deleteBtn.className = 'rep-outline-action rep-outline-delete';
       deleteBtn.title = 'Remove from outline';
+      deleteBtn.setAttribute('aria-label', 'Remove ' + displayName + ' from outline');
       deleteBtn.textContent = '✕';
       deleteBtn.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -2596,6 +2701,17 @@ const ECO_OPENINGS_DATA = `{"rnbqkbnr/pppppppp/8/8/8/7N/PPPPPPPP/RNBQKB1R b KQkq
   const openingNameEl = document.getElementById('openingName');
   const activeOpeningLabelEl = document.getElementById('activeOpeningLabel');
   const toastEl = document.getElementById('toast');
+  const syncBannerRetryEl = document.getElementById('syncBannerRetry');
+  if (syncBannerRetryEl) {
+    syncBannerRetryEl.addEventListener('click', async () => {
+      syncBannerRetryEl.disabled = true;
+      syncBannerRetryEl.textContent = 'Retrying…';
+      await retryPendingSyncs();
+      syncBannerRetryEl.disabled = false;
+      syncBannerRetryEl.textContent = 'Retry now';
+    });
+  }
+  updateSyncBanner();
   const whiteListEl = document.getElementById('whiteList');
   const blackListEl = document.getElementById('blackList');
   const engineStatusEl = document.getElementById('engineStatus');
@@ -2693,6 +2809,37 @@ const ECO_OPENINGS_DATA = `{"rnbqkbnr/pppppppp/8/8/8/7N/PPPPPPPP/RNBQKB1R b KQkq
     clearTimeout(toast._t);
     toast._t = setTimeout(()=> toastEl.classList.remove('show'), 2200);
   };
+
+  // A handful of tree edits (deleting a move + everything under it) are
+  // destructive enough that a silent toast isn't good enough — losing a
+  // branch with hours of memorized theory should be recoverable. This gives
+  // any such action a few seconds to be undone without adding a confirm
+  // dialog to a very routine editing action.
+  const undoToastEl = document.getElementById('undoToast');
+  const undoToastTextEl = document.getElementById('undoToastText');
+  const undoToastBtnEl = document.getElementById('undoToastBtn');
+  let undoToastTimer = null;
+  let undoToastAction = null;
+  window.showUndoToast = function(message, undoFn, durationMs = 8000){
+    if (!undoToastEl) { toast(message); return; }
+    undoToastAction = undoFn;
+    undoToastTextEl.textContent = message;
+    undoToastEl.style.display = 'flex';
+    clearTimeout(undoToastTimer);
+    undoToastTimer = setTimeout(hideUndoToast, durationMs);
+  };
+  function hideUndoToast(){
+    undoToastEl.style.display = 'none';
+    undoToastAction = null;
+    clearTimeout(undoToastTimer);
+  }
+  if (undoToastBtnEl) {
+    undoToastBtnEl.addEventListener('click', () => {
+      const fn = undoToastAction;
+      hideUndoToast();
+      if (fn) fn();
+    });
+  }
 
   function makeId(){ return 'op_' + Date.now().toString(36) + Math.random().toString(36).slice(2,7); }
   function makeBlankRoot(){ return { id:0, san:null, comment:null, tags:[], visuals:{arrows:[], highlights:[]}, stats: null, fen: new Chess().fen(), parent:null, children:[] }; }
@@ -2806,7 +2953,7 @@ const ECO_OPENINGS_DATA = `{"rnbqkbnr/pppppppp/8/8/8/7N/PPPPPPPP/RNBQKB1R b KQkq
 
     if (engineSource === 'lichess') {
       try {
-        const res = await fetch(`https://lichess.org/api/cloud-eval?fen=${encodeURIComponent(fen)}&multiPv=1`);
+        const res = await fetchWithTimeout(`https://lichess.org/api/cloud-eval?fen=${encodeURIComponent(fen)}&multiPv=1`);
         if (token !== engineSearchToken) return;
         
         if (!res.ok) {
@@ -2855,7 +3002,7 @@ const ECO_OPENINGS_DATA = `{"rnbqkbnr/pppppppp/8/8/8/7N/PPPPPPPP/RNBQKB1R b KQkq
       }
     } else if (engineSource === 'chessdb') {
       try {
-        const res = await fetch(`https://www.chessdb.cn/cdb.php?action=querypv&board=${encodeURIComponent(fen)}`);
+        const res = await fetchWithTimeout(`https://www.chessdb.cn/cdb.php?action=querypv&board=${encodeURIComponent(fen)}`);
         if (token !== engineSearchToken) return;
         
         const text = await res.text();
@@ -2967,6 +3114,109 @@ const ECO_OPENINGS_DATA = `{"rnbqkbnr/pppppppp/8/8/8/7N/PPPPPPPP/RNBQKB1R b KQkq
 
   window.saveOpeningData = async function(data){ await storeSet('opening:' + data.id, JSON.stringify(data)); }
 
+  // --- Full backup / restore -----------------------------------------
+  // The per-repertoire "Export as PGN" only captures the moves, not SRS
+  // stats, session history, or outline renames. This is a true backup of
+  // everything the app stores, so a lost/misconfigured account, a browser
+  // data wipe, or a bad edit can be recovered from.
+  const BACKUP_SCHEMA_VERSION = 1;
+
+  window.buildFullBackup = async function(){
+    const index = await window.loadIndex();
+    const activityRaw = await storeGet('activity-log');
+    const openings = {};
+    for (const entry of index) {
+      const data = await window.loadOpeningData(entry.id);
+      if (data) openings[entry.id] = data;
+    }
+    return {
+      schemaVersion: BACKUP_SCHEMA_VERSION,
+      exportedAt: new Date().toISOString(),
+      app: 'TurnFlow',
+      repertoireIndex: index,
+      activityLog: activityRaw ? (typeof activityRaw === 'string' ? JSON.parse(activityRaw) : activityRaw) : {},
+      openings
+    };
+  }
+
+  async function downloadFullBackup(){
+    try {
+      const backup = await window.buildFullBackup();
+      const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      const stamp = toLocalISODate(new Date());
+      a.href = url;
+      a.download = `turnflow-backup-${stamp}.json`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      toast('Backup downloaded');
+    } catch (e) {
+      console.error('Backup failed', e);
+      toast('Backup failed — see console for details');
+    }
+  }
+
+  async function restoreFullBackup(file){
+    let parsed;
+    try {
+      const text = await file.text();
+      parsed = JSON.parse(text);
+    } catch (e) {
+      toast('That file is not a valid TurnFlow backup');
+      return;
+    }
+    if (!parsed || !Array.isArray(parsed.repertoireIndex) || typeof parsed.openings !== 'object') {
+      toast('That file is not a valid TurnFlow backup');
+      return;
+    }
+    if (parsed.schemaVersion && parsed.schemaVersion > BACKUP_SCHEMA_VERSION) {
+      toast('This backup was made by a newer version of TurnFlow — restore skipped');
+      return;
+    }
+    openModal({
+      title: 'Restore from backup',
+      message: `This will replace your current ${repertoireIndex.length} repertoire(s) with the ${parsed.repertoireIndex.length} repertoire(s) in "${file.name}". This cannot be undone. Continue?`,
+      confirmLabel: 'Restore',
+      danger: true,
+      onConfirm: async () => {
+        try {
+          for (const [id, data] of Object.entries(parsed.openings)) {
+            await window.saveOpeningData(data);
+          }
+          repertoireIndex = parsed.repertoireIndex;
+          await window.saveIndex();
+          if (parsed.activityLog) {
+            await storeSet('activity-log', JSON.stringify(parsed.activityLog));
+          }
+          toast('Restore complete');
+          if (typeof window.reloadUserDataForActiveUser === 'function') {
+            await window.reloadUserDataForActiveUser();
+          }
+          location.reload();
+        } catch (e) {
+          console.error('Restore failed', e);
+          toast('Restore failed partway through — see console for details');
+        }
+      }
+    });
+  }
+
+  const btnBackupAllEl = document.getElementById('btnBackupAll');
+  if (btnBackupAllEl) btnBackupAllEl.addEventListener('click', downloadFullBackup);
+  const btnRestoreAllEl = document.getElementById('btnRestoreAll');
+  const restoreFileInputEl = document.getElementById('restoreFileInput');
+  if (btnRestoreAllEl && restoreFileInputEl) {
+    btnRestoreAllEl.addEventListener('click', () => restoreFileInputEl.click());
+    restoreFileInputEl.addEventListener('change', (e) => {
+      const file = e.target.files && e.target.files[0];
+      if (file) restoreFullBackup(file);
+      restoreFileInputEl.value = '';
+    });
+  }
+
   function toLocalISODate(date) {
     const y = date.getFullYear();
     const m = String(date.getMonth() + 1).padStart(2, '0');
@@ -3036,22 +3286,42 @@ const ECO_OPENINGS_DATA = `{"rnbqkbnr/pppppppp/8/8/8/7N/PPPPPPPP/RNBQKB1R b KQkq
 
   document.getElementById('cmenuDeleteMove').addEventListener('click', () => {
     if (!contextTargetNode || !contextTargetNode.parent) return;
-    contextTargetNode.parent.children = contextTargetNode.parent.children.filter(c => c.id !== contextTargetNode.id);
-    if (isDescendant(current, contextTargetNode)) goTo(contextTargetNode.parent);
+    const node = contextTargetNode;
+    const parent = node.parent;
+    const siblingIndex = parent.children.findIndex(c => c.id === node.id);
+    const wasCurrent = isDescendant(current, node);
+    parent.children = parent.children.filter(c => c.id !== node.id);
+    if (wasCurrent) goTo(parent);
     else renderTree();
     persistActiveTree();
     updateDueBadge();
-    toast('Move and attached branches deleted');
+    showUndoToast('Move and attached branches deleted', () => {
+      const insertAt = Math.min(siblingIndex, parent.children.length);
+      parent.children.splice(insertAt, 0, node);
+      node.parent = parent;
+      renderTree();
+      persistActiveTree();
+      updateDueBadge();
+      toast('Restored');
+    });
   });
 
   document.getElementById('cmenuDeleteRest').addEventListener('click', () => {
     if (!contextTargetNode) return;
-    contextTargetNode.children = [];
-    if (isDescendant(current, contextTargetNode) && current.id !== contextTargetNode.id) goTo(contextTargetNode);
+    const node = contextTargetNode;
+    const removedChildren = node.children;
+    node.children = [];
+    if (isDescendant(current, node) && current.id !== node.id) goTo(node);
     else renderTree();
     persistActiveTree();
     updateDueBadge();
-    toast('Rest of line deleted');
+    showUndoToast('Rest of line deleted', () => {
+      node.children = removedChildren;
+      renderTree();
+      persistActiveTree();
+      updateDueBadge();
+      toast('Restored');
+    });
   });
 
   const pdfFileInput = document.getElementById('pdfFileInput');
@@ -3315,7 +3585,7 @@ const ECO_OPENINGS_DATA = `{"rnbqkbnr/pppppppp/8/8/8/7N/PPPPPPPP/RNBQKB1R b KQkq
   async function fetchLichessGames(username, color, limit) {
     const maxParam = limit > 1000 ? 10000 : limit;
     const url = `https://lichess.org/api/games/user/${username}?max=${maxParam}&evals=false&opening=false`;
-    const response = await fetch(url, { headers: { 'Accept': 'application/x-chess-pgn' } });
+    const response = await fetchWithTimeout(url, { headers: { 'Accept': 'application/x-chess-pgn' } }, 30000);
     if (!response.ok) throw new Error('Lichess API error');
     const text = await response.text();
     const rawGames = text.split(/\n\s*\n\s*\n/);
@@ -3332,7 +3602,7 @@ const ECO_OPENINGS_DATA = `{"rnbqkbnr/pppppppp/8/8/8/7N/PPPPPPPP/RNBQKB1R b KQkq
   }
 
   async function fetchChessComGames(username, color, limit) {
-    const archivesRes = await fetch(`https://api.chess.com/pub/player/${username.toLowerCase()}/games/archives`);
+    const archivesRes = await fetchWithTimeout(`https://api.chess.com/pub/player/${username.toLowerCase()}/games/archives`, {}, 15000);
     if (!archivesRes.ok) throw new Error('Chess.com API error');
     const archivesData = await archivesRes.json();
     const urls = archivesData.archives || [];
@@ -3340,7 +3610,7 @@ const ECO_OPENINGS_DATA = `{"rnbqkbnr/pppppppp/8/8/8/7N/PPPPPPPP/RNBQKB1R b KQkq
 
     let allPgnStrings = [];
     for (let i = urls.length - 1; i >= 0 && allPgnStrings.length < limit; i--) {
-      const monthRes = await fetch(urls[i]);
+      const monthRes = await fetchWithTimeout(urls[i], {}, 15000);
       if (monthRes.ok) {
         const monthData = await monthRes.json();
         const games = monthData.games || [];
@@ -3518,7 +3788,7 @@ const ECO_OPENINGS_DATA = `{"rnbqkbnr/pppppppp/8/8/8/7N/PPPPPPPP/RNBQKB1R b KQkq
     if (explorerCache[key]) return explorerCache[key];
 
     const url = `https://www.chessdb.cn/cdb.php?action=queryall&board=${encodeURIComponent(fen)}`;
-    const res = await fetch(url);
+    const res = await fetchWithTimeout(url);
     if (!res.ok) throw new Error('Explorer API error (' + res.status + ')');
     const text = await res.text();
     
@@ -4084,6 +4354,13 @@ const ECO_OPENINGS_DATA = `{"rnbqkbnr/pppppppp/8/8/8/7N/PPPPPPPP/RNBQKB1R b KQkq
 
   function squareId(file, rank){ return 'abcdefgh'[file] + (rank+1); }
 
+  const PIECE_NAMES = { p: 'pawn', n: 'knight', b: 'bishop', r: 'rook', q: 'queen', k: 'king' };
+  function describeSquareForA11y(sq, piece){
+    if (!piece) return sq + ', empty';
+    const color = piece.color === 'w' ? 'White' : 'Black';
+    return sq + ', ' + color + ' ' + (PIECE_NAMES[piece.type] || piece.type);
+  }
+
   function buildSquareOrder(){
     const order = [];
     if (orientation === 'white'){
@@ -4100,7 +4377,9 @@ const ECO_OPENINGS_DATA = `{"rnbqkbnr/pppppppp/8/8/8/7N/PPPPPPPP/RNBQKB1R b KQkq
 
   function initBoardDOM(){
     boardEl.innerHTML = '';
-    
+    boardEl.setAttribute('role', 'group');
+    boardEl.setAttribute('aria-label', 'Chess board. Use arrow keys to move between squares, Enter to select a piece or make a move, Escape to cancel a selection.');
+
     svgOverlay = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     svgOverlay.setAttribute('class', 'board-svg-overlay');
     boardEl.appendChild(svgOverlay);
@@ -4112,8 +4391,12 @@ const ECO_OPENINGS_DATA = `{"rnbqkbnr/pppppppp/8/8/8/7N/PPPPPPPP/RNBQKB1R b KQkq
       const div = document.createElement('div');
       div.className = 'sq ' + (isLight ? 'light' : 'dark');
       div.dataset.square = sq;
+      div.setAttribute('role', 'button');
+      div.setAttribute('tabindex', '-1');
 
       div.addEventListener('click', ()=> onSquareClick(sq));
+      div.addEventListener('keydown', (e)=> onSquareKeydown(e, sq));
+      div.addEventListener('focus', ()=>{ focusedSquareEl = div; });
 
       div.addEventListener('contextmenu', (e) => e.preventDefault());
       div.addEventListener('mousedown', (e) => {
@@ -4196,6 +4479,70 @@ const ECO_OPENINGS_DATA = `{"rnbqkbnr/pppppppp/8/8/8/7N/PPPPPPPP/RNBQKB1R b KQkq
 
       boardEl.appendChild(div);
     });
+
+    // Roving tabindex: exactly one square is a tab stop at a time; arrow
+    // keys move it. Rebuilding the board (flip / mode switch) resets to the
+    // first square unless we can find the previously-focused one again.
+    const squares = Array.from(boardEl.querySelectorAll('.sq'));
+    const keepSq = focusedSquareEl ? focusedSquareEl.dataset.square : null;
+    const restore = keepSq ? squares.find(s => s.dataset.square === keepSq) : null;
+    const initial = restore || squares[0];
+    if (initial) { initial.tabIndex = 0; focusedSquareEl = initial; }
+  }
+
+  function boardSquareEls(){
+    return Array.from(boardEl.querySelectorAll('.sq'));
+  }
+
+  function focusSquareEl(div){
+    if (!div) return;
+    if (focusedSquareEl) focusedSquareEl.tabIndex = -1;
+    div.tabIndex = 0;
+    focusedSquareEl = div;
+    div.focus();
+  }
+
+  function onSquareKeydown(e, sq){
+    const squares = boardSquareEls();
+    const idx = squares.findIndex(s => s.dataset.square === sq);
+    if (idx === -1) return;
+    switch (e.key) {
+      case 'ArrowRight':
+        e.preventDefault();
+        focusSquareEl(squares[Math.min(idx + 1, squares.length - 1)]);
+        break;
+      case 'ArrowLeft':
+        e.preventDefault();
+        focusSquareEl(squares[Math.max(idx - 1, 0)]);
+        break;
+      case 'ArrowDown':
+        e.preventDefault();
+        focusSquareEl(squares[Math.min(idx + 8, squares.length - 1)]);
+        break;
+      case 'ArrowUp':
+        e.preventDefault();
+        focusSquareEl(squares[Math.max(idx - 8, 0)]);
+        break;
+      case 'Home':
+        e.preventDefault();
+        focusSquareEl(squares[0]);
+        break;
+      case 'End':
+        e.preventDefault();
+        focusSquareEl(squares[squares.length - 1]);
+        break;
+      case 'Enter':
+      case ' ':
+        e.preventDefault();
+        onSquareClick(sq);
+        break;
+      case 'Escape':
+        e.preventDefault();
+        selected = null;
+        legalTargets = [];
+        updateHighlights();
+        break;
+    }
   }
 
   function positionTouchGhost(clientX, clientY){
@@ -4286,12 +4633,16 @@ const ECO_OPENINGS_DATA = `{"rnbqkbnr/pppppppp/8/8/8/7N/PPPPPPPP/RNBQKB1R b KQkq
           img.src = PIECE_URLS[piece.color][piece.type];
           img.draggable = false;
           img.dataset.piece = currentCode;
+          img.alt = '';
+          img.setAttribute('aria-hidden', 'true');
           div.appendChild(img);
         }
       } else if (currentImg) {
         currentImg.style.visibility = 'visible';
         currentImg.style.transform = 'none';
       }
+
+      div.setAttribute('aria-label', describeSquareForA11y(sq, piece));
 
       if (piece && piece.color === sideToMove && inputAllowed()){
         div.classList.add('draggable-sq');
@@ -4312,6 +4663,7 @@ const ECO_OPENINGS_DATA = `{"rnbqkbnr/pppppppp/8/8/8/7N/PPPPPPPP/RNBQKB1R b KQkq
       const sq = div.dataset.square;
       div.classList.remove('selected', 'last-from', 'last-to');
       if (sq === selected) div.classList.add('selected');
+      div.setAttribute('aria-pressed', sq === selected ? 'true' : 'false');
       if (lastMove && (sq === lastMove.from || sq === lastMove.to)) {
         div.classList.add(sq === lastMove.from ? 'last-from' : 'last-to');
       }
@@ -4975,6 +5327,8 @@ function nodeHasVisibleDot(node){
     const toggleBtn = document.createElement('button');
     toggleBtn.className = 'rep-icon rep-outline-toggle';
     toggleBtn.title = 'Show chapters & side lines';
+    toggleBtn.setAttribute('aria-label', 'Show chapters and side lines for ' + o.name);
+    toggleBtn.setAttribute('aria-expanded', expandedRepIds.has(o.id) ? 'true' : 'false');
     toggleBtn.textContent = expandedRepIds.has(o.id) ? '▾' : '▸';
     toggleBtn.addEventListener('click', (e)=>{
       e.stopPropagation();
@@ -4992,6 +5346,7 @@ function nodeHasVisibleDot(node){
 
     const renameBtn = document.createElement('button');
     renameBtn.className = 'rep-icon'; renameBtn.title = 'Rename'; renameBtn.textContent = '✎';
+    renameBtn.setAttribute('aria-label', 'Rename ' + o.name);
     renameBtn.addEventListener('click', (e)=>{
       e.stopPropagation();
       openModal({ title: 'Rename opening', fields: [{ key: 'name', label: 'Name', value: o.name }], confirmLabel: 'Rename',
@@ -5000,14 +5355,17 @@ function nodeHasVisibleDot(node){
 
     const dupBtn = document.createElement('button');
     dupBtn.className = 'rep-icon'; dupBtn.title = 'Duplicate'; dupBtn.textContent = '⧉';
+    dupBtn.setAttribute('aria-label', 'Duplicate ' + o.name);
     dupBtn.addEventListener('click', (e)=>{ e.stopPropagation(); duplicateOpening(o.id); });
 
     const exportBtn = document.createElement('button');
     exportBtn.className = 'rep-icon'; exportBtn.title = 'Export as PGN'; exportBtn.textContent = '⇩';
+    exportBtn.setAttribute('aria-label', 'Export ' + o.name + ' as PGN');
     exportBtn.addEventListener('click', (e)=>{ e.stopPropagation(); exportOpening(o.id); });
 
     const delBtn = document.createElement('button');
     delBtn.className = 'rep-icon'; delBtn.title = 'Delete'; delBtn.textContent = '✕';
+    delBtn.setAttribute('aria-label', 'Delete ' + o.name);
     delBtn.addEventListener('click', (e)=>{
       e.stopPropagation();
       openModal({ title: 'Delete opening?', message: '"' + o.name + '" will be permanently deleted.', confirmLabel: 'Delete', danger: true,
@@ -6816,6 +7174,8 @@ function nodeHasVisibleDot(node){
       if (typeof window.reloadUserDataForActiveUser === 'function') {
         await window.reloadUserDataForActiveUser();
       }
+      if (typeof retryPendingSyncs === 'function') { retryPendingSyncs(); }
+      if (typeof updateSyncBanner === 'function') { updateSyncBanner(); }
     } else {
       currentUserUid = null;
       userDisplayName.style.display = 'none';
@@ -6823,6 +7183,7 @@ function nodeHasVisibleDot(node){
       btnOpenAuth.style.display = 'inline-block';
       btnSignOut.style.display = 'none';
       guestWarning.style.display = 'block';
+      if (typeof updateSyncBanner === 'function') { updateSyncBanner(); }
 
       if (typeof window.reloadUserDataForActiveUser === 'function') {
         await window.reloadUserDataForActiveUser();
