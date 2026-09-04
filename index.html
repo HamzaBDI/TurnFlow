@@ -832,10 +832,16 @@ button:disabled{opacity:.32;transform:none!important}
 .rep-outline-loading,.rep-outline-empty{font-family:Inter,ui-sans-serif,sans-serif;font-size:10.5px;font-style:italic;color:var(--ink-faint);padding:3px 4px;}
 .rep-outline-list{list-style:none;margin:0;padding:0 0 0 12px;border-left:1px solid var(--rule-soft);}
 .rep-outline-list > li{margin:1px 0;}
-.rep-outline-label{display:block;font-family:Inter,ui-sans-serif,sans-serif;font-size:11px;line-height:1.5;padding:2px 6px;border-radius:5px;color:var(--ink-soft);cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.rep-outline-item-row{display:flex;align-items:center;gap:2px;min-width:0;}
+.rep-outline-label{display:block;flex:1;min-width:0;font-family:Inter,ui-sans-serif,sans-serif;font-size:11px;line-height:1.5;padding:2px 6px;border-radius:5px;color:var(--ink-soft);cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .rep-outline-label:hover{background:rgba(255,255,255,.05);color:var(--accent-bright);}
-.rep-outline-chapter > .rep-outline-label{font-weight:600;color:var(--ink-soft);}
-.rep-outline-sideline > .rep-outline-label{font-style:italic;color:var(--ink-faint);font-weight:400;}
+.rep-outline-chapter .rep-outline-label{font-weight:600;color:var(--ink-soft);}
+.rep-outline-sideline .rep-outline-label{font-style:italic;color:var(--ink-faint);font-weight:400;}
+.rep-outline-item-actions{display:flex;gap:1px;opacity:0;transition:opacity .12s ease;}
+.rep-outline-item-row:hover .rep-outline-item-actions,.rep-outline-item-actions:focus-within{opacity:1;}
+.rep-outline-action{width:20px;height:20px;padding:0;border:0;border-radius:4px;background:transparent;color:var(--ink-faint);font-size:10px;line-height:20px;cursor:pointer;}
+.rep-outline-action:hover{background:rgba(255,255,255,.07);color:var(--accent-bright);}
+.rep-outline-action.rep-outline-delete:hover{color:var(--danger);}
 
 /* ---------- Board surface ---------- */
 .board-wrap{
@@ -2075,7 +2081,7 @@ window.reloadUserDataForActiveUser = async function reloadUserDataForActiveUser(
 
   if (!repertoireIndex.length) {
     const id = makeId();
-    const data = { id, name: 'My First Repertoire', color: 'white', description: '', createdAt: Date.now(), sessions: [], tree: serializeTreeNode(makeBlankRoot()) };
+    const data = { id, name: 'My First Repertoire', color: 'white', description: '', createdAt: Date.now(), sessions: [], outlineMeta: { renamed: {}, hidden: {} }, tree: serializeTreeNode(makeBlankRoot()) };
     await saveOpeningData(data);
     repertoireIndex = [{ id, name: data.name, color: 'white', createdAt: data.createdAt }];
     await saveIndex();
@@ -2185,25 +2191,44 @@ const ECO_OPENINGS_DATA = `{"rnbqkbnr/pppppppp/8/8/8/7N/PPPPPPPP/RNBQKB1R b KQkq
     return turn === 'w' ? (fullmove + '.' + san) : (fullmove + '...' + san);
   }
 
-  // Builds a sidebar outline for a repertoire tree: a top-level list of
-  // "chapters" (recognized opening/variation names encountered along each
-  // main line), each optionally followed by "side lines" — named after the
-  // move that diverged from the main line — nested to any depth.
-  //
-  // Side lines are attached to whichever chapter was active at the branching
-  // point; if no chapter has started yet (position not yet in the opening
-  // dictionary), branches are listed at the top level instead.
+  // Each chapter / side line is identified by the SAN path from the root.
+  // This lets users rename or hide an outline item without touching the
+  // underlying repertoire tree. Hidden items are therefore only removed from
+  // this navigation outline; their moves, stats, comments and branches remain.
+  function outlinePathKey(path){
+    return (path || []).join('>');
+  }
+
+  function getOutlineMeta(repId, fallbackMeta){
+    if (repId === activeOpeningId && activeOpeningMeta){
+      return activeOpeningMeta.outlineMeta || { renamed: {}, hidden: {} };
+    }
+    return (fallbackMeta && fallbackMeta.outlineMeta) || { renamed: {}, hidden: {} };
+  }
+
   function buildRepertoireOutline(rootNode){
     const chapters = [];
 
     function walkSideline(node, path, ownerObj){
       if (!node.children || !node.children.length) return;
+
+      // A side line can become a named opening/variation only after several
+      // moves have been added. Keep updating its display label as we walk
+      // deeper so a branch such as the Caro-Kann Exchange Variation gets its
+      // proper name as soon as the matching position exists in the tree.
+      const recognizedHere = eco_openingNameForFen(node.fen);
+      if (recognizedHere && recognizedHere.length >= String(ownerObj.label || '').length){
+        ownerObj.label = recognizedHere;
+        ownerObj.recognizedName = true;
+      }
+
       for (let i = 1; i < node.children.length; i++){
         const sideChild = node.children[i];
-        const label = eco_moveLabel(node.fen, sideChild.san);
-        const nestedObj = { type: 'sideline', label, path: path.concat([sideChild.san]), sideLines: [] };
+        const childPath = path.concat([sideChild.san]);
+        const label = eco_openingNameForFen(sideChild.fen) || eco_moveLabel(node.fen, sideChild.san);
+        const nestedObj = { type: 'sideline', label, recognizedName: !!eco_openingNameForFen(sideChild.fen), path: childPath, sideLines: [] };
         ownerObj.sideLines.push(nestedObj);
-        walkSideline(sideChild, path.concat([sideChild.san]), nestedObj);
+        walkSideline(sideChild, childPath, nestedObj);
       }
       walkSideline(node.children[0], path.concat([node.children[0].san]), ownerObj);
     }
@@ -2216,11 +2241,12 @@ const ECO_OPENINGS_DATA = `{"rnbqkbnr/pppppppp/8/8/8/7N/PPPPPPPP/RNBQKB1R b KQkq
       // continuation is about to start.
       for (let i = 1; i < node.children.length; i++){
         const sideChild = node.children[i];
-        const label = eco_moveLabel(node.fen, sideChild.san);
-        const sideObj = { type: 'sideline', label, path: path.concat([sideChild.san]), sideLines: [] };
+        const childPath = path.concat([sideChild.san]);
+        const label = eco_openingNameForFen(sideChild.fen) || eco_moveLabel(node.fen, sideChild.san);
+        const sideObj = { type: 'sideline', label, recognizedName: !!eco_openingNameForFen(sideChild.fen), path: childPath, sideLines: [] };
         if (chapterCtx) chapterCtx.obj.sideLines.push(sideObj);
         else ownerList.push(sideObj);
-        walkSideline(sideChild, path.concat([sideChild.san]), sideObj);
+        walkSideline(sideChild, childPath, sideObj);
       }
 
       const mainChild = node.children[0];
@@ -2229,7 +2255,7 @@ const ECO_OPENINGS_DATA = `{"rnbqkbnr/pppppppp/8/8/8/7N/PPPPPPPP/RNBQKB1R b KQkq
 
       let nextChapterCtx = chapterCtx;
       if (mainName && (!chapterCtx || chapterCtx.name !== mainName)){
-        const chapterObj = { type: 'chapter', name: mainName, path: mainPath, sideLines: [] };
+        const chapterObj = { type: 'chapter', name: mainName, recognizedName: true, path: mainPath, sideLines: [] };
         ownerList.push(chapterObj);
         nextChapterCtx = { name: mainName, obj: chapterObj };
       }
@@ -2240,31 +2266,140 @@ const ECO_OPENINGS_DATA = `{"rnbqkbnr/pppppppp/8/8/8/7N/PPPPPPPP/RNBQKB1R b KQkq
     return chapters;
   }
 
-  // Renders a buildRepertoireOutline() result as a nested <ul>. Clicking a
-  // chapter or side line jumps the board to that position, switching the
-  // active repertoire first if needed.
-  function renderRepertoireOutline(items, repId){
+  async function updateOutlineItem(repId, item, action, value){
+    const data = await loadOpeningData(repId);
+    if (!data) return;
+
+    const meta = data.outlineMeta || { renamed: {}, hidden: {} };
+    meta.renamed = meta.renamed || {};
+    meta.hidden = meta.hidden || {};
+    const key = outlinePathKey(item.path);
+
+    if (action === 'rename'){
+      const cleanName = String(value || '').trim();
+      if (!cleanName) return;
+      meta.renamed[key] = cleanName;
+    } else if (action === 'delete'){
+      // "Delete" here means delete from the outline only. The actual
+      // repertoire tree is deliberately left completely untouched.
+      // Remember what the item was called at the moment it was removed.
+      // This is important because a line that was previously just a move
+      // can later become a newly recognized named variation at the same path.
+      // In that case the new name must be allowed back into the outline.
+      meta.hidden[key] = {
+        removedLabel: String((item.type === 'chapter' ? item.name : item.label) || '').trim()
+      };
+    }
+
+    data.outlineMeta = meta;
+    await saveOpeningData(data);
+
+    if (repId === activeOpeningId && activeOpeningMeta){
+      activeOpeningMeta.outlineMeta = meta;
+    }
+
+    const container = document.querySelector('.rep-outline-container[data-rep-id="' + CSS.escape(repId) + '"]');
+    if (container){
+      await populateRepOutline(repId, container);
+    }
+    toast(action === 'rename' ? 'Renamed' : 'Removed from outline');
+  }
+
+  function renderRepertoireOutline(items, repId, outlineMeta){
     const ul = document.createElement('ul');
     ul.className = 'rep-outline-list';
+
     items.forEach(item => {
+      const key = outlinePathKey(item.path);
+      const hiddenValue = outlineMeta.hidden && outlineMeta.hidden[key];
+      const isHidden = !!hiddenValue;
+      const currentGeneratedName = item.type === 'chapter' ? item.name : item.label;
+      const removedLabel = hiddenValue && typeof hiddenValue === 'object'
+        ? String(hiddenValue.removedLabel || '')
+        : '';
+
+      // If a path was hidden before it had a recognized opening name, but is
+      // now recognized as a named variation, it is a NEW outline item and
+      // must be shown. This handles transpositions such as a Slav line that
+      // becomes "Semi-Slav Defense: Accelerated Move Order" after 3...e6.
+      const newlyRecognized = isHidden && item.recognizedName &&
+        removedLabel !== currentGeneratedName;
+
+      if (isHidden && !newlyRecognized){
+        // If a parent chapter/side-line was removed, promote its children to
+        // this level so named descendants can still appear immediately.
+        if (item.sideLines && item.sideLines.length){
+          const promoted = renderRepertoireOutline(item.sideLines, repId, outlineMeta);
+          Array.from(promoted.children).forEach(child => ul.appendChild(child));
+        }
+        return;
+      }
+
       const li = document.createElement('li');
       li.className = item.type === 'chapter' ? 'rep-outline-chapter' : 'rep-outline-sideline';
+
+      const content = document.createElement('div');
+      content.className = 'rep-outline-item-row';
+
       const label = document.createElement('span');
       label.className = 'rep-outline-label';
-      label.title = item.type === 'chapter' ? item.name : item.label;
-      label.textContent = item.type === 'chapter' ? item.name : item.label;
+      const displayName = (outlineMeta.renamed && outlineMeta.renamed[key])
+        || (item.type === 'chapter' ? item.name : item.label);
+      label.title = displayName;
+      label.textContent = displayName;
       label.addEventListener('click', (e) => {
         e.stopPropagation();
         navigateToOutlinePath(repId, item.path);
       });
-      li.appendChild(label);
+
+      const actions = document.createElement('div');
+      actions.className = 'rep-outline-item-actions';
+
+      const renameBtn = document.createElement('button');
+      renameBtn.type = 'button';
+      renameBtn.className = 'rep-outline-action';
+      renameBtn.title = 'Rename';
+      renameBtn.textContent = '✎';
+      renameBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        openModal({
+          title: item.type === 'chapter' ? 'Rename chapter' : 'Rename side line',
+          fields: [{ key: 'name', label: 'Name', value: displayName }],
+          confirmLabel: 'Rename',
+          onConfirm: (v) => updateOutlineItem(repId, item, 'rename', v.name)
+        });
+      });
+
+      const deleteBtn = document.createElement('button');
+      deleteBtn.type = 'button';
+      deleteBtn.className = 'rep-outline-action rep-outline-delete';
+      deleteBtn.title = 'Remove from outline';
+      deleteBtn.textContent = '✕';
+      deleteBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        openModal({
+          title: item.type === 'chapter' ? 'Remove chapter from outline?' : 'Remove side line from outline?',
+          message: 'This only removes the item from the chapter/side-line list. The actual moves and the repertoire line will not be deleted.',
+          confirmLabel: 'Remove',
+          danger: true,
+          onConfirm: () => updateOutlineItem(repId, item, 'delete')
+        });
+      });
+
+      actions.appendChild(renameBtn);
+      actions.appendChild(deleteBtn);
+      content.appendChild(label);
+      content.appendChild(actions);
+      li.appendChild(content);
+
       if (item.sideLines && item.sideLines.length){
-        li.appendChild(renderRepertoireOutline(item.sideLines, repId));
+        li.appendChild(renderRepertoireOutline(item.sideLines, repId, outlineMeta));
       }
       ul.appendChild(li);
     });
     return ul;
   }
+
 
   async function navigateToOutlinePath(repId, path){
     if (repId !== activeOpeningId){
@@ -2285,20 +2420,31 @@ const ECO_OPENINGS_DATA = `{"rnbqkbnr/pppppppp/8/8/8/7N/PPPPPPPP/RNBQKB1R b KQkq
   async function populateRepOutline(id, container){
     container.innerHTML = '<div class="rep-outline-loading">Loading…</div>';
     let treeRoot;
+    let outlineMeta;
     if (id === activeOpeningId){
       treeRoot = root;
+      outlineMeta = getOutlineMeta(id, activeOpeningMeta);
     } else {
       const data = await loadOpeningData(id);
       if (!data){ container.innerHTML = ''; return; }
       treeRoot = deserializeTreeNode(data.tree, null);
+      outlineMeta = getOutlineMeta(id, data);
     }
     const chapters = buildRepertoireOutline(treeRoot);
     container.innerHTML = '';
+    container.dataset.repId = id;
     if (!chapters.length){
       container.innerHTML = '<div class="rep-outline-empty">No named variations yet</div>';
       return;
     }
-    container.appendChild(renderRepertoireOutline(chapters, id));
+    // Hidden outline entries are filtered during rendering, while their
+    // descendants are promoted so newly recognized names are never lost.
+    const rendered = renderRepertoireOutline(chapters, id, outlineMeta);
+    if (!rendered.children.length){
+      container.innerHTML = '<div class="rep-outline-empty">No named variations yet</div>';
+      return;
+    }
+    container.appendChild(rendered);
   }
 
   function toggleRepOutline(id, container, btn){
@@ -2690,6 +2836,18 @@ const ECO_OPENINGS_DATA = `{"rnbqkbnr/pppppppp/8/8/8/7N/PPPPPPPP/RNBQKB1R b KQkq
     if (!raw) return null;
     try { return typeof raw === 'string' ? JSON.parse(raw) : raw; } catch(e){ return null; }
   }
+  // Refresh the visible repertoire outline whenever the underlying tree is
+  // persisted. This keeps newly added/recognized chapters and variations in
+  // sync immediately, without requiring the user to collapse/re-open the
+  // repertoire or switch tabs.
+  async function refreshActiveRepertoireOutline(){
+    if (!activeOpeningId) return;
+    const container = Array.from(document.querySelectorAll('.rep-outline-container')).find(c => c.dataset.repId === activeOpeningId);
+    if (container && container.style.display !== 'none'){
+      await populateRepOutline(activeOpeningId, container);
+    }
+  }
+
   window.saveOpeningData = async function(data){ await storeSet('opening:' + data.id, JSON.stringify(data)); }
 
   function toLocalISODate(date) {
@@ -2726,9 +2884,12 @@ const ECO_OPENINGS_DATA = `{"rnbqkbnr/pppppppp/8/8/8/7N/PPPPPPPP/RNBQKB1R b KQkq
       id: activeOpeningMeta.id, name: activeOpeningMeta.name, color: activeOpeningMeta.color,
       description: activeOpeningMeta.description || '', createdAt: activeOpeningMeta.createdAt,
       sessions: activeOpeningMeta.sessions || [],
+      outlineMeta: activeOpeningMeta.outlineMeta || { renamed: {}, hidden: {} },
       tree: serializeTreeNode(root)
     };
     await saveOpeningData(payload);
+    // Keep the outline live as the repertoire tree changes.
+    refreshActiveRepertoireOutline();
   }
 
   function showContextMenu(e, node) {
@@ -4493,14 +4654,14 @@ function nodeHasVisibleDot(node){
       const indexEntry = repertoireIndex.find(o => o.id === id);
       const fallbackName = indexEntry ? indexEntry.name : 'My First Repertoire';
       const fallbackColor = indexEntry ? indexEntry.color : 'white';
-      const freshData = { id, name: fallbackName, color: fallbackColor, description: '', createdAt: Date.now(), sessions: [], tree: serializeTreeNode(makeBlankRoot()) };
+      const freshData = { id, name: fallbackName, color: fallbackColor, description: '', createdAt: Date.now(), sessions: [], outlineMeta: { renamed: {}, hidden: {} }, tree: serializeTreeNode(makeBlankRoot()) };
       await saveOpeningData(freshData);
       activeOpeningId = id;
-      activeOpeningMeta = { id: freshData.id, name: freshData.name, color: freshData.color, description: freshData.description, createdAt: freshData.createdAt, sessions: [] };
+      activeOpeningMeta = { id: freshData.id, name: freshData.name, color: freshData.color, description: freshData.description, createdAt: freshData.createdAt, sessions: [], outlineMeta: freshData.outlineMeta || { renamed: {}, hidden: {} } };
       root = deserializeTreeNode(freshData.tree, null);
     } else {
       activeOpeningId = id;
-      activeOpeningMeta = { id: data.id, name: data.name, color: data.color, description: data.description, createdAt: data.createdAt, sessions: data.sessions || [] };
+      activeOpeningMeta = { id: data.id, name: data.name, color: data.color, description: data.description, createdAt: data.createdAt, sessions: data.sessions || [], outlineMeta: data.outlineMeta || { renamed: {}, hidden: {} } };
       root = deserializeTreeNode(data.tree, null);
     }
     rebuildNodeIndex(root);
@@ -4526,7 +4687,7 @@ function nodeHasVisibleDot(node){
 
   async function createOpening(name, color){
     const id = makeId();
-    const data = { id, name: name || 'Untitled opening', color, description: '', createdAt: Date.now(), sessions: [], tree: serializeTreeNode(makeBlankRoot()) };
+    const data = { id, name: name || 'Untitled opening', color, description: '', createdAt: Date.now(), sessions: [], outlineMeta: { renamed: {}, hidden: {} }, tree: serializeTreeNode(makeBlankRoot()) };
     await saveOpeningData(data);
     repertoireIndex.push({ id, name: data.name, color, createdAt: data.createdAt });
     await saveIndex();
@@ -4553,7 +4714,7 @@ function nodeHasVisibleDot(node){
     const data = await loadOpeningData(id);
     if (!data) return;
     const newId = makeId();
-    const copy = { id: newId, name: data.name + ' (copy)', color: data.color, description: data.description, createdAt: Date.now(), sessions: [], tree: data.tree };
+    const copy = { id: newId, name: data.name + ' (copy)', color: data.color, description: data.description, createdAt: Date.now(), sessions: [], outlineMeta: JSON.parse(JSON.stringify(data.outlineMeta || { renamed: {}, hidden: {} })), tree: data.tree };
     await saveOpeningData(copy);
     repertoireIndex.push({ id: newId, name: copy.name, color: copy.color, createdAt: copy.createdAt });
     await saveIndex();
@@ -6277,7 +6438,7 @@ function nodeHasVisibleDot(node){
 
     if (!Array.isArray(repertoireIndex) || !repertoireIndex.length) {
       const id = makeId();
-      const data = { id, name: 'My First Repertoire', color: 'white', description: '', createdAt: Date.now(), sessions: [], tree: serializeTreeNode(makeBlankRoot()) };
+      const data = { id, name: 'My First Repertoire', color: 'white', description: '', createdAt: Date.now(), sessions: [], outlineMeta: { renamed: {}, hidden: {} }, tree: serializeTreeNode(makeBlankRoot()) };
       repertoireIndex = [{ id, name: data.name, color: 'white', createdAt: data.createdAt }];
       guestStorageSet('repertoire-index', JSON.stringify(repertoireIndex));
       guestStorageSet('opening:' + id, JSON.stringify(data));
@@ -6288,12 +6449,12 @@ function nodeHasVisibleDot(node){
     let openingData = null;
     try { openingData = rawOpening ? JSON.parse(rawOpening) : null; } catch(e) {}
     if (!openingData) {
-      openingData = { id: targetRep.id, name: targetRep.name || 'My First Repertoire', color: 'white', description: '', createdAt: targetRep.createdAt || Date.now(), sessions: [], tree: serializeTreeNode(makeBlankRoot()) };
+      openingData = { id: targetRep.id, name: targetRep.name || 'My First Repertoire', color: 'white', description: '', createdAt: targetRep.createdAt || Date.now(), sessions: [], outlineMeta: { renamed: {}, hidden: {} }, tree: serializeTreeNode(makeBlankRoot()) };
       guestStorageSet('opening:' + targetRep.id, JSON.stringify(openingData));
     }
 
     activeOpeningId = openingData.id;
-    activeOpeningMeta = { id: openingData.id, name: openingData.name, color: 'white', description: openingData.description || '', createdAt: openingData.createdAt, sessions: openingData.sessions || [] };
+    activeOpeningMeta = { id: openingData.id, name: openingData.name, color: 'white', description: openingData.description || '', createdAt: openingData.createdAt, sessions: openingData.sessions || [], outlineMeta: openingData.outlineMeta || { renamed: {}, hidden: {} } };
     root = deserializeTreeNode(openingData.tree, null);
     rebuildNodeIndex(root);
     current = root;
