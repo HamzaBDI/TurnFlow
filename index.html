@@ -877,6 +877,11 @@ button:disabled{opacity:.32;transform:none!important}
 .rep-outline-action{width:20px;height:20px;padding:0;border:0;border-radius:4px;background:transparent;color:var(--ink-faint);font-size:10px;line-height:20px;cursor:pointer;}
 .rep-outline-action:hover{background:rgba(255,255,255,.07);color:var(--accent-bright);}
 .rep-outline-action.rep-outline-delete:hover{color:var(--danger);}
+.rep-outline-item-row.outline-active{background:rgba(74,133,119,.14);border-left:2px solid var(--accent);border-radius:5px;}
+.rep-outline-item-row.outline-active .rep-outline-label{color:var(--accent-bright);font-weight:700;}
+.rep-outline-train{font-size:10px!important;width:auto!important;padding:0 5px!important;border:1px solid var(--rule)!important;color:var(--accent)!important;white-space:nowrap;}
+.rep-outline-train:hover{border-color:var(--accent)!important;background:rgba(74,133,119,.12)!important;color:var(--accent-bright)!important;}
+
 
 /* ---------- Board surface ---------- */
 .board-wrap{
@@ -2343,6 +2348,65 @@ const ECO_OPENINGS_DATA = `{"rnbqkbnr/pppppppp/8/8/8/7N/PPPPPPPP/RNBQKB1R b KQkq
     toast(action === 'rename' ? 'Renamed' : 'Removed from outline');
   }
 
+  function getNodePathSan(node){
+    const path = [];
+    let n = node;
+    while (n && n.parent){ path.unshift(n.san); n = n.parent; }
+    return path;
+  }
+
+  function isCurrentOutlinePath(path, repId){
+    if (repId !== activeOpeningId || !current) return false;
+    const currentPath = getNodePathSan(current);
+    if (path.length > currentPath.length) return false;
+    return path.every((san, i) => san === currentPath[i]);
+  }
+
+  function updateRepertoireOutlineSelection(){
+    document.querySelectorAll('.rep-outline-item-row[data-outline-path]').forEach(row => {
+      let path = [];
+      try { path = JSON.parse(row.dataset.outlinePath || '[]'); } catch (_) {}
+      const repId = row.dataset.outlineRepId;
+      row.classList.toggle('outline-active', isCurrentOutlinePath(path, repId));
+    });
+  }
+
+  async function trainOutlineLine(repId, path, displayName){
+    if (repId !== activeOpeningId){
+      await setActiveOpening(repId);
+    }
+    let node = root;
+    for (const san of path){
+      const child = node.children.find(c => c.san === san);
+      if (!child){ toast('Could not locate that line'); return; }
+      node = child;
+    }
+    if (!node || node === root){ toast('This line has no moves to train.'); return; }
+    if (mode !== 'train') document.getElementById('tabTrain').click();
+    setTimeout(() => startTrainingSingleLine(node, displayName), 0);
+  }
+
+  function startTrainingSingleLine(lineEndNode, displayName){
+    if (!lineEndNode || lineEndNode === root){ toast('This line has no moves to train.'); return; }
+    const line = getPathTo(lineEndNode);
+    trainSession = {
+      hintUsed: false,
+      hadMistake: false,
+      hadHint: false,
+      answerRevealed: false,
+      kind: 'line',
+      stats: { total: 0, correct: 0, incorrect: 0 },
+      startTime: Date.now(), awaiting: false, queue: [lineEndNode], qIndex: -1,
+      testedIds: new Set(), currentPath: line, pathIndex: 0,
+      totalResponseMs: 0, recordedMoves: 0,
+      reviewing: false, reviewAnchorIndex: null, reviewResumeAwaiting: false,
+      singleLine: true, singleLineName: displayName || 'Selected line'
+    };
+    hideFeedback();
+    renderModeUI();
+    startNextLine();
+  }
+
   function renderRepertoireOutline(items, repId, outlineMeta){
     const ul = document.createElement('ul');
     ul.className = 'rep-outline-list';
@@ -2392,6 +2456,20 @@ const ECO_OPENINGS_DATA = `{"rnbqkbnr/pppppppp/8/8/8/7N/PPPPPPPP/RNBQKB1R b KQkq
 
       const actions = document.createElement('div');
       actions.className = 'rep-outline-item-actions';
+      content.dataset.outlinePath = JSON.stringify(item.path || []);
+      content.dataset.outlineRepId = String(repId);
+      content.dataset.outlineName = displayName;
+
+      const trainBtn = document.createElement('button');
+      trainBtn.type = 'button';
+      trainBtn.className = 'rep-outline-action rep-outline-train';
+      trainBtn.title = 'Train this line from start to finish';
+      trainBtn.textContent = 'Train';
+      trainBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        trainOutlineLine(repId, item.path || [], displayName);
+      });
+      actions.appendChild(trainBtn);
 
       const renameBtn = document.createElement('button');
       renameBtn.type = 'button';
@@ -2483,6 +2561,7 @@ const ECO_OPENINGS_DATA = `{"rnbqkbnr/pppppppp/8/8/8/7N/PPPPPPPP/RNBQKB1R b KQkq
       return;
     }
     container.appendChild(rendered);
+    updateRepertoireOutlineSelection();
   }
 
   function toggleRepOutline(id, container, btn){
@@ -4354,6 +4433,7 @@ function goTo(node){
     chess.load(node.fen);
     selected = null; legalTargets = []; lastMove = null;
     render();
+    updateRepertoireOutlineSelection();
   }
 
   function renderStatus(){
@@ -5700,6 +5780,8 @@ function nodeHasVisibleDot(node){
       if (trainSession.kind === 'due') {
         if (ensureStats(nextNode).dueDate <= Date.now()) needsTest = true;
       } else {
+        // Beginning/random and explicitly selected lines always test the move,
+        // regardless of its SRS due date.
         needsTest = true;
       }
     }
@@ -5818,7 +5900,9 @@ function nodeHasVisibleDot(node){
   }
 
   function renderTrainActive(){
-    document.getElementById('trainProgress').textContent = 'Line ' + (trainSession.qIndex + 1) + ' of ' + trainSession.queue.length;
+    document.getElementById('trainProgress').textContent = trainSession.singleLine
+      ? ('Selected line: ' + trainSession.singleLineName)
+      : ('Line ' + (trainSession.qIndex + 1) + ' of ' + trainSession.queue.length);
     document.getElementById('trainPrompt').textContent = 'Your move (' + (traineeColor() === 'w' ? 'White' : 'Black') + ').';
     trainSession.moveStartTime = Date.now();
     updateStatChips();
