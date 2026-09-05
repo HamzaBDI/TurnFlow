@@ -2258,7 +2258,6 @@ window.reloadUserDataForActiveUser = async function reloadUserDataForActiveUser(
   let orientation = 'white';
   let selected = null;
   let legalTargets = [];
-  let focusedSquareEl = null; // roving-tabindex board square for keyboard navigation
   let lastMove = null;
 
   window.repertoireIndex = [];
@@ -4354,13 +4353,6 @@ const ECO_OPENINGS_DATA = `{"rnbqkbnr/pppppppp/8/8/8/7N/PPPPPPPP/RNBQKB1R b KQkq
 
   function squareId(file, rank){ return 'abcdefgh'[file] + (rank+1); }
 
-  const PIECE_NAMES = { p: 'pawn', n: 'knight', b: 'bishop', r: 'rook', q: 'queen', k: 'king' };
-  function describeSquareForA11y(sq, piece){
-    if (!piece) return sq + ', empty';
-    const color = piece.color === 'w' ? 'White' : 'Black';
-    return sq + ', ' + color + ' ' + (PIECE_NAMES[piece.type] || piece.type);
-  }
-
   function buildSquareOrder(){
     const order = [];
     if (orientation === 'white'){
@@ -4377,8 +4369,6 @@ const ECO_OPENINGS_DATA = `{"rnbqkbnr/pppppppp/8/8/8/7N/PPPPPPPP/RNBQKB1R b KQkq
 
   function initBoardDOM(){
     boardEl.innerHTML = '';
-    boardEl.setAttribute('role', 'group');
-    boardEl.setAttribute('aria-label', 'Chess board. Use arrow keys to move between squares, Enter to select a piece or make a move, Escape to cancel a selection.');
 
     svgOverlay = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     svgOverlay.setAttribute('class', 'board-svg-overlay');
@@ -4391,12 +4381,8 @@ const ECO_OPENINGS_DATA = `{"rnbqkbnr/pppppppp/8/8/8/7N/PPPPPPPP/RNBQKB1R b KQkq
       const div = document.createElement('div');
       div.className = 'sq ' + (isLight ? 'light' : 'dark');
       div.dataset.square = sq;
-      div.setAttribute('role', 'button');
-      div.setAttribute('tabindex', '-1');
 
       div.addEventListener('click', ()=> onSquareClick(sq));
-      div.addEventListener('keydown', (e)=> onSquareKeydown(e, sq));
-      div.addEventListener('focus', ()=>{ focusedSquareEl = div; });
 
       div.addEventListener('contextmenu', (e) => e.preventDefault());
       div.addEventListener('mousedown', (e) => {
@@ -4479,71 +4465,8 @@ const ECO_OPENINGS_DATA = `{"rnbqkbnr/pppppppp/8/8/8/7N/PPPPPPPP/RNBQKB1R b KQkq
 
       boardEl.appendChild(div);
     });
-
-    // Roving tabindex: exactly one square is a tab stop at a time; arrow
-    // keys move it. Rebuilding the board (flip / mode switch) resets to the
-    // first square unless we can find the previously-focused one again.
-    const squares = Array.from(boardEl.querySelectorAll('.sq'));
-    const keepSq = focusedSquareEl ? focusedSquareEl.dataset.square : null;
-    const restore = keepSq ? squares.find(s => s.dataset.square === keepSq) : null;
-    const initial = restore || squares[0];
-    if (initial) { initial.tabIndex = 0; focusedSquareEl = initial; }
   }
 
-  function boardSquareEls(){
-    return Array.from(boardEl.querySelectorAll('.sq'));
-  }
-
-  function focusSquareEl(div){
-    if (!div) return;
-    if (focusedSquareEl) focusedSquareEl.tabIndex = -1;
-    div.tabIndex = 0;
-    focusedSquareEl = div;
-    div.focus();
-  }
-
-  function onSquareKeydown(e, sq){
-    const squares = boardSquareEls();
-    const idx = squares.findIndex(s => s.dataset.square === sq);
-    if (idx === -1) return;
-    switch (e.key) {
-      case 'ArrowRight':
-        e.preventDefault();
-        focusSquareEl(squares[Math.min(idx + 1, squares.length - 1)]);
-        break;
-      case 'ArrowLeft':
-        e.preventDefault();
-        focusSquareEl(squares[Math.max(idx - 1, 0)]);
-        break;
-      case 'ArrowDown':
-        e.preventDefault();
-        focusSquareEl(squares[Math.min(idx + 8, squares.length - 1)]);
-        break;
-      case 'ArrowUp':
-        e.preventDefault();
-        focusSquareEl(squares[Math.max(idx - 8, 0)]);
-        break;
-      case 'Home':
-        e.preventDefault();
-        focusSquareEl(squares[0]);
-        break;
-      case 'End':
-        e.preventDefault();
-        focusSquareEl(squares[squares.length - 1]);
-        break;
-      case 'Enter':
-      case ' ':
-        e.preventDefault();
-        onSquareClick(sq);
-        break;
-      case 'Escape':
-        e.preventDefault();
-        selected = null;
-        legalTargets = [];
-        updateHighlights();
-        break;
-    }
-  }
 
   function positionTouchGhost(clientX, clientY){
     if (!touchDragState) return;
@@ -4633,16 +4556,12 @@ const ECO_OPENINGS_DATA = `{"rnbqkbnr/pppppppp/8/8/8/7N/PPPPPPPP/RNBQKB1R b KQkq
           img.src = PIECE_URLS[piece.color][piece.type];
           img.draggable = false;
           img.dataset.piece = currentCode;
-          img.alt = '';
-          img.setAttribute('aria-hidden', 'true');
           div.appendChild(img);
         }
       } else if (currentImg) {
         currentImg.style.visibility = 'visible';
         currentImg.style.transform = 'none';
       }
-
-      div.setAttribute('aria-label', describeSquareForA11y(sq, piece));
 
       if (piece && piece.color === sideToMove && inputAllowed()){
         div.classList.add('draggable-sq');
@@ -4663,7 +4582,6 @@ const ECO_OPENINGS_DATA = `{"rnbqkbnr/pppppppp/8/8/8/7N/PPPPPPPP/RNBQKB1R b KQkq
       const sq = div.dataset.square;
       div.classList.remove('selected', 'last-from', 'last-to');
       if (sq === selected) div.classList.add('selected');
-      div.setAttribute('aria-pressed', sq === selected ? 'true' : 'false');
       if (lastMove && (sq === lastMove.from || sq === lastMove.to)) {
         div.classList.add(sq === lastMove.from ? 'last-from' : 'last-to');
       }
